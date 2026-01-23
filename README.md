@@ -1,1 +1,112 @@
-# ip-monitor
+# IP Monitor
+
+Full-stack Next.js monitoring platform built with the Bolt.new pattern. Users register IPs, Supabase cron jobs run TCP health checks, incidents capture state transitions, and SMTP emails (via Supabase relay) deliver elegant alerts.
+
+## Stack
+
+- **Framework**: Next.js App Router with React + TailwindCSS (Tailwind v4)
+- **Database**: Supabase Postgres with migrations, indexes, and RLS policies in `supabase/migrations/000_initial.sql`
+- **Auth**: Supabase Auth via email/password + password reset
+- **Monitoring engine**: Cron endpoint at `/api/cron/check-monitors` powered by a service-role Supabase client
+- **Emails**: Supabase SMTP relay + HTML templates (`src/lib/email/templates.ts`)
+- **Charts**: Recharts for dashboard/report trends
+
+## Features
+
+1. **Authentication & protection**
+   - `/login`, `/signup`, `/reset-password` for auth flows
+   - Middleware redirects protected paths (`/dashboard`, `/monitors`, `/reports`, `/settings`) if no session
+2. **Monitoring CRUD**
+   - Full REST API (`/api/monitors`, `/api/monitors/[id]`) + UI for listing, creating, toggling, deleting, and editing monitors
+3. **Monitoring engine**
+   - Cron job selects due monitors, runs TCP port checks, records `monitor_checks`, tracks status transitions, and manages incidents
+   - Failure threshold (default 2) prevents spamming alerts
+4. **Notifications**
+   - Emails include last checks summary, incident timestamps, and dashboard link
+   - Settings page lets users customize alert email + whether to notify on DOWN/UP
+5. **Reports & UX**
+   - Dashboard summary + chart, monitors list with search, detail view with checks history
+   - Reports page with filters, CSV export, and trend chart
+   - Tailwind-based layout with sidebar, header, and toasts for feedback
+
+## Getting started
+
+```bash
+npm install
+npm run dev
+```
+
+Visit `http://localhost:3000` and sign up. Protected UI lives under `/dashboard`, `/monitors`, `/reports`, and `/settings`.
+
+### Environment variables
+
+| Name | Purpose |
+| --- | --- |
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Public anon key |
+| `SUPABASE_SERVICE_ROLE_KEY` | Service role key (server only, used by cron) |
+| `APP_URL` | Canonical app URL (used inside emails and cron helpers) |
+| `CRON_SECRET` | Shared secret required by `/api/cron/check-monitors` |
+| `SMTP_HOST` | Supabase SMTP host (Settings > Email under your project) |
+| `SMTP_PORT` | Corresponding SMTP port (usually 587) |
+| `SMTP_USERNAME` | SMTP username provided by Supabase |
+| `SMTP_PASSWORD` | SMTP password provided by Supabase |
+| `EMAIL_FROM` | Sender address allowed by your SMTP configuration |
+
+Add those to `.env.local` locally and in your deployment dashboard.
+
+### Database & Supabase
+
+1. Run the migration in `supabase/migrations/000_initial.sql` to create tables, indexes, and RLS policies.
+2. Supabase tables:
+   - `monitors`: per-user IPs, intervals, thresholds, `next_check_at`, and status metadata
+   - `monitor_checks`: health check history
+   - `monitor_incidents`: state transitions
+   - `notification_settings`: per-user email + opt-in flags
+3. RLS policies allow users only to access their data; service-role queries bypass RLS for cron tasks.
+
+### Cron & monitoring
+
+- The endpoint `/api/cron/check-monitors` accepts `GET` or `POST` requests.
+- In Vercel, it also accepts Vercel Cron calls (`x-vercel-cron: 1`). For other schedulers, send the header `cron-secret: <CRON_SECRET>`.
+- Schedule it via:
+  1. **Vercel Cron Jobs**: This repo includes `vercel.json` to run every minute.
+  2. **Supabase pg_cron**: Add a scheduled trigger that executes `http` call or uses `fetch` via a helper function to the same endpoint.
+- Each run picks monitors whose `next_check_at <= now()`, records a check, updates `next_check_at`, and only sends emails on status changes.
+
+### Local dev auto-checks
+
+- Run `npm run dev:cron` in another terminal to trigger the cron endpoint periodically (default: every 60 seconds).
+
+### APIs & helpers
+
+- `GET/POST /api/monitors`, `GET/PATCH/DELETE /api/monitors/:id`
+- `GET /api/reports/summary`, `GET /api/reports/checks?monitorId&status&from&to&format=csv`
+- `GET /api/incidents?monitorId&status=open|resolved`
+- `GET/PATCH /api/settings/notifications`
+- `GET/POST /api/cron/check-monitors` (header `CRON_SECRET`)
+
+Server utilities:
+
+- `src/lib/cron/check-monitors.ts` runs the health checks, manages incidents, and dispatches SMTP alerts via Supabase credentials
+- `src/lib/network/check-monitor.ts` performs TCP port probes
+- `src/lib/email/templates.ts` and `send.ts` define the alert copy
+- `src/lib/supabase/*` centralizes Supabase clients and types
+
+## Deployment
+
+1. Push to GitHub and connect the repo to Vercel.
+2. Add the required environment variables in Vercel project settings.
+3. Configure a Vercel Cron Job (or Supabase scheduled job) hitting `/api/cron/check-monitors` every minute with header `CRON_SECRET`.
+
+## Testing & verification
+
+- `npm run dev` for local development.
+- Use `curl -H "CRON_SECRET:<secret>" https://<APP_URL>/api/cron/check-monitors` to trigger a manual run.
+- Watch the dashboard, add monitors, and toggle them to verify incidents and emails.
+
+## Notes
+
+- All frontend interactions use Tailwind UI-inspired cards, badges, and charts.
+- Toasts (`src/components/toast-provider.tsx`) provide instant success/error feedback.
+- The layout features a sidebar/app shell (`src/components/app-shell.tsx`) ensuring consistent navigation.
