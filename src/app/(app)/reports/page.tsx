@@ -57,8 +57,9 @@ export default function ReportsPage() {
   useEffect(() => {
     if (!authReady || !session?.access_token) return;
     fetch("/api/monitors", { headers: authHeaders })
-      .then((res) => res.json())
-      .then((data) => setMonitors(data ?? []));
+      .then(async (res) => (await res.json()) as Monitor[] | null)
+      .then((data) => setMonitors(data ?? []))
+      .catch(() => setMonitors([]));
   }, [authHeaders, authReady, session?.access_token]);
 
   const queryString = useMemo(() => {
@@ -79,8 +80,8 @@ export default function ReportsPage() {
     setLoading(true);
     try {
       const response = await fetch(`/api/reports/checks?${queryString}`, { headers: authHeaders });
-      const data = await response.json();
-      setChecks(data.checks ?? []);
+      const data = (await response.json()) as { checks?: CheckRecord[] } | null;
+      setChecks(data?.checks ?? []);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unable to load checks";
       toast.push({ title: "Unable to load checks", description: message, variant: "error" });

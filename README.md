@@ -45,7 +45,7 @@ Visit `http://localhost:3000` and sign up. Protected UI lives under `/dashboard`
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Public anon key |
 | `SUPABASE_SERVICE_ROLE_KEY` | Service role key (server only, used by cron) |
-| `APP_URL` | Canonical app URL (used inside emails and cron helpers) |
+| `APP_URL` | Canonical app URL (used inside emails); optional on Vercel because `VERCEL_URL` is used automatically |
 | `CRON_SECRET` | Shared secret required by `/api/cron/check-monitors` |
 | `SMTP_HOST` | Supabase SMTP host (Settings > Email under your project) |
 | `SMTP_PORT` | Corresponding SMTP port (usually 587) |
@@ -70,13 +70,45 @@ Add those to `.env.local` locally and in your deployment dashboard.
 - The endpoint `/api/cron/check-monitors` accepts `GET` or `POST` requests.
 - In Vercel, it also accepts Vercel Cron calls (`x-vercel-cron: 1`). For other schedulers, send the header `cron-secret: <CRON_SECRET>`.
 - Schedule it via:
-  1. **Vercel Cron Jobs**: This repo includes `vercel.json` to run every minute.
-  2. **Supabase pg_cron**: Add a scheduled trigger that executes `http` call or uses `fetch` via a helper function to the same endpoint.
+  1. **Vercel Cron Jobs (Pro)**: if you are on Pro, you can run every minute.
+  2. **Vercel Hobby (free)**: Vercel limits cron to daily runs, so you must use an external scheduler for every-minute monitoring.
+  3. **External scheduler (recommended on Hobby)**: any cron service that can call a URL every minute and send a header can be used.
+     - Example: Cloudflare Workers Cron Trigger (free) calling your Vercel endpoint every minute with `cron-secret`.
+
+#### Practical production setup on Vercel Hobby (free): Cloudflare Worker Cron
+
+1. Deploy the app to Vercel normally (cron in `vercel.json` is set to daily just to satisfy Hobby limits).
+2. Create a Cloudflare Worker and add a Cron Trigger with `* * * * *`.
+3. Add two environment variables in the Worker:
+   - `APP_URL`: your production URL, e.g. `https://your-app.vercel.app`
+   - `CRON_SECRET`: same value as in your Vercel env vars
+4. Worker code:
+
+```js
+export default {
+  async scheduled(event, env, ctx) {
+    const res = await fetch(`${env.APP_URL}/api/cron/check-monitors`, {
+      method: "POST",
+      headers: { "cron-secret": env.CRON_SECRET },
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      console.error(`[cron] ${res.status} ${text}`);
+    }
+  },
+};
+```
+
+#### Important note about private IPs
+
+If you are monitoring private IPs (RFC1918 like `192.168.x.x`, `10.x.x.x`, `172.16-31.x.x`), a cloud scheduler (Vercel/Cloudflare) will NOT be able to reach them. In that case you need to run the scheduler inside your network (a small always-on VM/PC/Raspberry Pi) calling `/api/cron/check-monitors` with `cron-secret`.
 - Each run picks monitors whose `next_check_at <= now()`, records a check, updates `next_check_at`, and only sends emails on status changes.
 
 ### Local dev auto-checks
 
 - Run `npm run dev:cron` in another terminal to trigger the cron endpoint periodically (default: every 60 seconds).
+- Or run both together: `npm run dev:all`.
 
 ### APIs & helpers
 

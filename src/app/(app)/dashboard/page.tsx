@@ -93,8 +93,8 @@ export default function DashboardPage() {
     }
 
     if (checksRes.ok) {
-      const data = await checksRes.json();
-      setChecks(data.checks ?? []);
+      const data = (await checksRes.json()) as { checks?: CheckPayload[] } | null;
+      setChecks(data?.checks ?? []);
     }
   }, [authHeaders, authReady, session?.access_token]);
 

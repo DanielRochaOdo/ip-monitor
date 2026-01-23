@@ -36,7 +36,7 @@ export async function PATCH(request: Request) {
 
     if (!parsed.success) {
       return NextResponse.json(
-        { error: parsed.error.errors.map((issue) => issue.message) },
+        { error: parsed.error.issues.map((issue) => issue.message) },
         { status: 400 },
       );
     }

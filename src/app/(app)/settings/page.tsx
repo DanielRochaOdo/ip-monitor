@@ -44,7 +44,7 @@ export default function SettingsPage() {
     if (!authReady || !session?.access_token) return;
 
     fetch("/api/settings/notifications", { headers: authHeaders })
-      .then((res) => res.json())
+      .then(async (res) => (await res.json()) as { settings?: SettingsForm } | null)
       .then((data) => {
         if (data?.settings) {
           setForm({
@@ -68,7 +68,7 @@ export default function SettingsPage() {
     setSaving(false);
 
     if (!response.ok) {
-      const data = await response.json();
+      const data = (await response.json()) as { error?: string } | null;
       toast.push({ title: "Unable to save", description: data?.error, variant: "error" });
       return;
     }

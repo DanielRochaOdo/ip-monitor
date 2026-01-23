@@ -1,40 +1,109 @@
-import { cookies } from "next/headers";
-import { notFound } from "next/navigation";
-import { getRequiredEnv } from "@/lib/env";
-import { MonitorDetail } from "@/components/monitor-detail";
+"use client";
 
-type PageProps = {
-  params: {
-    id: string;
-  };
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { MonitorDetail } from "@/components/monitor-detail";
+import { useAuthReady, useSession } from "@/components/supabase-provider";
+import { useToast } from "@/components/toast-provider";
+
+type MonitorPayload = {
+  id: string;
+  nickname: string;
+  ip_address: string;
+  ping_interval_seconds: number;
+  failure_threshold: number;
+  ports: number[];
+  is_active: boolean;
+  last_status: "UP" | "DOWN" | null;
+  last_checked_at: string | null;
 };
 
-export default async function MonitorDetailPage({ params }: PageProps) {
-  const cookieStore = await cookies();
-  const accessToken = cookieStore.get("sb-access-token")?.value;
-  const refreshToken = cookieStore.get("sb-refresh-token")?.value;
-  const headers =
-    accessToken
-      ? {
-          Authorization: `Bearer ${accessToken}`,
-          ...(refreshToken ? { "x-refresh-token": refreshToken } : {}),
-        }
-      : undefined;
-  const baseUrl = getRequiredEnv("APP_URL");
-  const monitorRes = await fetch(`${baseUrl}/api/monitors/${params.id}`, {
-    cache: "no-store",
-    headers,
-  });
-  if (!monitorRes.ok) {
-    return notFound();
+type CheckPayload = {
+  id: string;
+  checked_at: string;
+  status: "UP" | "DOWN";
+  latency_ms: number | null;
+  error_message: string | null;
+};
+
+type PageProps = {
+  params: { id: string };
+};
+
+export default function MonitorDetailPage({ params }: PageProps) {
+  const [monitor, setMonitor] = useState<MonitorPayload | null>(null);
+  const [checks, setChecks] = useState<CheckPayload[]>([]);
+  const [loading, setLoading] = useState(true);
+  const session = useSession();
+  const authReady = useAuthReady();
+  const router = useRouter();
+  const toast = useToast();
+
+  const authHeaders = useMemo(() => {
+    if (!session?.access_token) return {};
+    return {
+      Authorization: `Bearer ${session.access_token}`,
+      ...(session.refresh_token ? { "x-refresh-token": session.refresh_token } : {}),
+    };
+  }, [session]);
+
+  useEffect(() => {
+    if (!authReady) return;
+    if (!session?.access_token) {
+      router.replace("/login");
+    }
+  }, [authReady, router, session?.access_token]);
+
+  useEffect(() => {
+    if (!authReady || !session?.access_token) return;
+
+    let cancelled = false;
+    setLoading(true);
+
+    const load = async () => {
+      const [monitorRes, checksRes] = await Promise.all([
+        fetch(`/api/monitors/${params.id}`, { headers: authHeaders, cache: "no-store" }),
+        fetch(`/api/reports/checks?monitorId=${params.id}&limit=10`, {
+          headers: authHeaders,
+          cache: "no-store",
+        }),
+      ]);
+
+      if (cancelled) return;
+
+      if (!monitorRes.ok) {
+        toast.push({ title: "Monitor não encontrado", variant: "error" });
+        router.replace("/monitors");
+        return;
+      }
+
+      const monitorJson = (await monitorRes.json()) as MonitorPayload;
+      const checksJson = (await checksRes.json()) as { checks?: CheckPayload[] } | null;
+
+      setMonitor(monitorJson);
+      setChecks(checksJson?.checks ?? []);
+      setLoading(false);
+    };
+
+    void load().catch((error) => {
+      if (cancelled) return;
+      setLoading(false);
+      toast.push({
+        title: "Falha ao carregar monitor",
+        description: error instanceof Error ? error.message : "Tente novamente",
+        variant: "error",
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authHeaders, authReady, params.id, router, session?.access_token, toast]);
+
+  if (loading || !monitor) {
+    return <div className="text-sm text-slate-400">Carregando...</div>;
   }
-  const monitor = await monitorRes.json();
 
-  const checksRes = await fetch(`${baseUrl}/api/reports/checks?monitorId=${params.id}&limit=10`, {
-    cache: "no-store",
-    headers,
-  });
-  const checksData = await checksRes.json();
-
-  return <MonitorDetail monitor={monitor} checks={checksData.checks ?? []} />;
+  return <MonitorDetail monitor={monitor} checks={checks} />;
 }
+

@@ -2,6 +2,17 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabaseClient } from "@/lib/supabase/route";
 import { UnauthorizedError } from "@/lib/errors";
 
+type IncidentRecord = {
+  id: string;
+  monitor_id: string;
+  started_at: string;
+  resolved_at: string | null;
+  monitors?: {
+    nickname: string | null;
+    ip_address: string | null;
+  } | null;
+};
+
 export async function GET(request: NextRequest) {
   try {
     const { supabase } = await getServerSupabaseClient(request);
@@ -30,7 +41,7 @@ export async function GET(request: NextRequest) {
       throw error;
     }
 
-    const incidents = (data ?? []).map((incident) => ({
+    const incidents = ((data ?? []) as unknown as IncidentRecord[]).map((incident) => ({
       id: incident.id,
       monitorId: incident.monitor_id,
       startedAt: incident.started_at,

@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import type { User } from "@supabase/supabase-js";
+import type { SupabaseClient, User } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/types";
 import { UnauthorizedError } from "@/lib/errors";
 import { getRequiredEnv } from "@/lib/env";
@@ -36,7 +36,7 @@ function getAccessTokenFromRequest(request: Request) {
 }
 
 export async function getServerSupabaseClient(request: Request): Promise<{
-  supabase: ReturnType<typeof createClient<Database>>;
+  supabase: SupabaseClient<Database>;
   user: User;
 }> {
   const accessToken = getAccessTokenFromRequest(request);

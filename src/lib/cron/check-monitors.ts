@@ -3,12 +3,10 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { runTcpHealthCheck } from "@/lib/network/check-monitor";
 import { buildDownEmail, buildUpEmail, MonitorCheckSummary } from "@/lib/email/templates";
 import { sendMonitorEmail } from "@/lib/email/send";
-import { getRequiredEnv } from "@/lib/env";
+import { getAppUrl } from "@/lib/env";
 
 type MonitorRow = Database["public"]["Tables"]["monitors"]["Row"];
 type NotificationSettingsRow = Database["public"]["Tables"]["notification_settings"]["Row"];
-
-const dashboardUrl = new URL("/dashboard", getRequiredEnv("APP_URL")).toString();
 
 type CronReport = {
   checked: number;
@@ -121,6 +119,8 @@ export async function runMonitorChecks(): Promise<RunMonitorsResult> {
     incidentsResolved: 0,
     errors: [],
   };
+
+  const dashboardUrl = new URL("/dashboard", getAppUrl()).toString();
 
   const { data: monitorsData, error } = await supabaseAdmin
     .from("monitors")

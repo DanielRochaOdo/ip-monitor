@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSupabaseClient } from "@/lib/supabase/route";
 import { monitorPatchSchema } from "@/lib/validators/monitor";
 import { UnauthorizedError } from "@/lib/errors";
+import type { Database } from "@/lib/supabase/types";
 
 const toErrorMessage = (error: unknown) => {
   if (error instanceof Error) return error.message;
@@ -63,12 +64,12 @@ export async function PATCH(request: Request, context: RouteContext) {
 
     if (!parsed.success) {
       return NextResponse.json(
-        { error: parsed.error.errors.map((issue) => issue.message) },
+        { error: parsed.error.issues.map((issue) => issue.message) },
         { status: 400 },
       );
     }
 
-    const updates: Record<string, unknown> = {
+    const updates: Database["public"]["Tables"]["monitors"]["Update"] = {
       ...parsed.data,
       updated_at: new Date().toISOString(),
     };

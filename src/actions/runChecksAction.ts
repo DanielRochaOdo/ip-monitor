@@ -1,6 +1,6 @@
 "use server";
 
-import { getRequiredEnv } from "@/lib/env";
+import { getAppUrl, getRequiredEnv } from "@/lib/env";
 
 export type RunChecksResult = {
   checked: number;
@@ -12,7 +12,7 @@ export type RunChecksResult = {
 
 export async function runChecksAction(): Promise<RunChecksResult> {
   const cronSecret = getRequiredEnv("CRON_SECRET");
-  const appUrl = getRequiredEnv("APP_URL");
+  const appUrl = getAppUrl();
 
   const response = await fetch(`${appUrl}/api/cron/check-monitors`, {
     method: "POST",

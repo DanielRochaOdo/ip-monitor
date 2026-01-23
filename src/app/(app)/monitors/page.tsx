@@ -66,8 +66,11 @@ export default function MonitorsPage() {
     if (!response.ok) {
       let message: string | null = null;
       try {
-        const payload = await response.json();
-        message = payload?.error ?? null;
+        const payload: unknown = await response.json();
+        if (payload && typeof payload === "object" && "error" in payload) {
+          const maybeError = (payload as { error?: unknown }).error;
+          message = typeof maybeError === "string" ? maybeError : null;
+        }
       } catch {
         // ignore
       }
@@ -80,7 +83,7 @@ export default function MonitorsPage() {
       return;
     }
 
-    const data = await response.json();
+    const data = (await response.json()) as MonitorResponse[] | null;
     setMonitors(data ?? []);
   }, [authHeaders, authReady, session?.access_token, toast]);
 
@@ -181,8 +184,11 @@ export default function MonitorsPage() {
     if (!response.ok) {
       let message: string | null = null;
       try {
-        const payload = await response.json();
-        message = payload?.error ?? null;
+        const payload: unknown = await response.json();
+        if (payload && typeof payload === "object" && "error" in payload) {
+          const maybeError = (payload as { error?: unknown }).error;
+          message = typeof maybeError === "string" ? maybeError : null;
+        }
       } catch {
         // ignore
       }
@@ -210,8 +216,11 @@ export default function MonitorsPage() {
     if (!response.ok) {
       let message: string | null = null;
       try {
-        const payload = await response.json();
-        message = payload?.error ?? null;
+        const payload: unknown = await response.json();
+        if (payload && typeof payload === "object" && "error" in payload) {
+          const maybeError = (payload as { error?: unknown }).error;
+          message = typeof maybeError === "string" ? maybeError : null;
+        }
       } catch {
         // ignore
       }

@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getRequiredEnv } from "@/lib/env";
 import { runMonitorChecks } from "@/lib/cron/check-monitors";
 
-const expectedSecret = getRequiredEnv("CRON_SECRET");
+const expectedSecret = process.env.CRON_SECRET ?? "";
 
 function validateSecret(request: NextRequest) {
   // Vercel Cron Jobs include this header automatically.
@@ -11,6 +10,10 @@ function validateSecret(request: NextRequest) {
   // send CRON_SECRET as a header.
   if (request.headers.get("x-vercel-cron") === "1") {
     return true;
+  }
+
+  if (!expectedSecret) {
+    return false;
   }
 
   const headerValue =
