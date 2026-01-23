@@ -19,6 +19,7 @@ export default function SettingsPage() {
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [sendingTest, setSendingTest] = useState(false);
   const toast = useToast();
   const session = useSession();
   const authReady = useAuthReady();
@@ -75,6 +76,30 @@ export default function SettingsPage() {
     toast.push({ title: "Settings saved", variant: "success" });
   };
 
+  const sendTestEmail = async () => {
+    setSendingTest(true);
+    try {
+      const response = await fetch("/api/settings/test-email", {
+        method: "POST",
+        headers: authHeaders,
+      });
+
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok) {
+        const message =
+          payload && typeof payload === "object" && "error" in payload
+            ? String((payload as { error?: unknown }).error ?? "Falha ao enviar")
+            : "Falha ao enviar";
+        toast.push({ title: "Email de teste falhou", description: message, variant: "error" });
+        return;
+      }
+
+      toast.push({ title: "Email de teste enviado", variant: "success" });
+    } finally {
+      setSendingTest(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-6 shadow-xl">
@@ -123,8 +148,27 @@ export default function SettingsPage() {
         </form>
       </div>
       <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-6 shadow-xl">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-xs uppercase tracking-[0.4em] text-slate-400">Teste</p>
+            <p className="text-sm text-slate-300">Envie um email de teste para validar o SMTP.</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void sendTestEmail()}
+            disabled={sendingTest || loading || !form.alert_email}
+            className="rounded-full border border-white/10 px-5 py-3 text-xs font-semibold uppercase tracking-[0.3em] text-slate-200 transition hover:border-white/20 disabled:opacity-60"
+          >
+            {sendingTest ? "Enviando…" : "Enviar email de teste"}
+          </button>
+        </div>
+        <p className="mt-3 text-xs text-slate-500">
+          Dica: em producao, configure as variaveis SMTP tambem na Vercel (Project Settings &gt; Environment Variables).
+        </p>
+      </div>
+      <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-6 shadow-xl">
         <p className="text-sm text-slate-400">
-          Alerts are delivered through Resend using the address configured above.
+          Os alertas de monitoramento são enviados via SMTP (configurado no .env). O email acima é o destino dos alertas.
         </p>
       </div>
     </div>

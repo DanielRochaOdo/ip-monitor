@@ -3,20 +3,29 @@ import { getServerSupabaseClient } from "@/lib/supabase/route";
 import { monitorPatchSchema } from "@/lib/validators/monitor";
 import { UnauthorizedError } from "@/lib/errors";
 
-const toErrorMessage = (error: unknown) =>
-  error instanceof Error
-    ? error.message
-    : typeof error === "string"
-      ? error
-      : (error as any)?.message
-        ? String((error as any).message)
-        : JSON.stringify(error);
+const toErrorMessage = (error: unknown) => {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object" && "message" in error) {
+    return String((error as { message?: unknown }).message ?? "Unknown error");
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return "Unknown error";
+  }
+};
 
 type RouteContext = { params: Promise<{ id: string }> | { id: string } };
 
+async function getIdFromContext(context: RouteContext) {
+  const params = await Promise.resolve(context.params);
+  return params.id;
+}
+
 export async function GET(request: Request, context: RouteContext) {
   try {
-    const { id } = await Promise.resolve(context.params as any);
+    const id = await getIdFromContext(context);
     const { supabase } = await getServerSupabaseClient(request);
     const { data, error } = await supabase
       .from("monitors")
@@ -47,7 +56,7 @@ export async function GET(request: Request, context: RouteContext) {
 
 export async function PATCH(request: Request, context: RouteContext) {
   try {
-    const { id } = await Promise.resolve(context.params as any);
+    const id = await getIdFromContext(context);
     const { supabase } = await getServerSupabaseClient(request);
     const payload = await request.json();
     const parsed = monitorPatchSchema.safeParse(payload);
@@ -98,19 +107,20 @@ export async function PATCH(request: Request, context: RouteContext) {
 
 export async function DELETE(request: Request, context: RouteContext) {
   try {
-    const { id } = await Promise.resolve(context.params as any);
+    const id = await getIdFromContext(context);
     const { supabase } = await getServerSupabaseClient(request);
     const { error } = await supabase.from("monitors").delete().eq("id", id);
 
     if (error) {
+      const err = error as unknown as Record<string, unknown>;
       return NextResponse.json(
         {
           error: "Unable to delete monitor",
           details: {
-            message: (error as any)?.message ?? null,
-            code: (error as any)?.code ?? null,
-            details: (error as any)?.details ?? null,
-            hint: (error as any)?.hint ?? null,
+            message: typeof err.message === "string" ? err.message : null,
+            code: typeof err.code === "string" ? err.code : null,
+            details: typeof err.details === "string" ? err.details : null,
+            hint: typeof err.hint === "string" ? err.hint : null,
           },
         },
         { status: 500 },

@@ -1,5 +1,41 @@
 // Dev-only scheduler to mimic Vercel Cron locally.
 // Run in a separate terminal: `node scripts/cron-dev.mjs`
+//
+// Note: Node does not automatically load `.env`, so we do a tiny `.env` load here.
+
+import fs from "node:fs";
+import path from "node:path";
+
+function loadDotEnv() {
+  const envPath = path.join(process.cwd(), ".env");
+  if (!fs.existsSync(envPath)) return;
+
+  const content = fs.readFileSync(envPath, "utf8");
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+
+    const match = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+    if (!match) continue;
+
+    const key = match[1];
+    let value = match[2] ?? "";
+
+    // Remove surrounding quotes.
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+
+    if (process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+}
+
+loadDotEnv();
 
 const appUrl = process.env.APP_URL ?? "http://localhost:3000";
 const cronSecret = process.env.CRON_SECRET;

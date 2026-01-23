@@ -89,6 +89,13 @@ export default function MonitorsPage() {
     void refreshMonitors();
   }, [authReady, refreshMonitors, session?.access_token]);
 
+  // Keep the list up-to-date while cron runs in the background.
+  useEffect(() => {
+    if (!authReady || !session?.access_token) return;
+    const interval = setInterval(() => void refreshMonitors(), 30_000);
+    return () => clearInterval(interval);
+  }, [authReady, refreshMonitors, session?.access_token]);
+
   const filteredMonitors = useMemo(() => {
     if (!search) return monitors;
     return monitors.filter(
@@ -125,15 +132,23 @@ export default function MonitorsPage() {
     setCreating(false);
 
     if (!response.ok) {
-      let data: any = null;
+      let message: string | null = null;
       try {
-        data = await response.json();
+        const payload: unknown = await response.json();
+        if (payload && typeof payload === "object" && "error" in payload) {
+          const maybeError = (payload as { error?: unknown }).error;
+          if (typeof maybeError === "string") {
+            message = maybeError;
+          } else if (Array.isArray(maybeError)) {
+            message = maybeError.filter((item) => typeof item === "string").join(", ");
+          }
+        }
       } catch {
         // ignore
       }
       toast.push({
         title: "Unable to create monitor",
-        description: data?.error ?? "Try again",
+        description: message ?? "Try again",
         variant: "error",
       });
       return;
@@ -234,18 +249,22 @@ export default function MonitorsPage() {
             <input
               value={form.nickname}
               onChange={(event) => setForm((prev) => ({ ...prev, nickname: event.target.value }))}
+              placeholder="Ex: Servidor ERP"
               className="w-full rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2 text-sm text-slate-200"
               required
             />
+            <p className="text-xs text-slate-500">Nome amigável para identificar o alvo nos alertas e relatórios.</p>
           </div>
           <div className="space-y-1">
             <label className="text-xs uppercase tracking-[0.4em] text-slate-400">Endereço IP</label>
             <input
               value={form.ip_address}
               onChange={(event) => setForm((prev) => ({ ...prev, ip_address: event.target.value }))}
+              placeholder="Ex: 192.168.0.10"
               className="w-full rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2 text-sm text-slate-200"
               required
             />
+            <p className="text-xs text-slate-500">IPv4/IPv6 do destino que será monitorado.</p>
           </div>
           <div className="space-y-1">
             <label className="text-xs uppercase tracking-[0.4em] text-slate-400">
@@ -260,6 +279,9 @@ export default function MonitorsPage() {
               }
               className="w-full rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2 text-sm text-slate-200"
             />
+            <p className="text-xs text-slate-500">
+              Frequência das verificações. Mínimo 60s (limite do agendamento via cron em produção).
+            </p>
           </div>
           <div className="space-y-1">
             <label className="text-xs uppercase tracking-[0.4em] text-slate-400">Limite</label>
@@ -272,15 +294,21 @@ export default function MonitorsPage() {
               }
               className="w-full rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2 text-sm text-slate-200"
             />
+            <p className="text-xs text-slate-500">
+              Quantas falhas consecutivas para considerar DOWN (evita falso positivo). Padrão: 2.
+            </p>
           </div>
           <div className="space-y-1 md:col-span-2">
             <label className="text-xs uppercase tracking-[0.4em] text-slate-400">Portas</label>
             <input
               value={form.ports}
               onChange={(event) => setForm((prev) => ({ ...prev, ports: event.target.value }))}
+              placeholder="Ex: 80,443"
               className="w-full rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2 text-sm text-slate-200"
             />
-            <p className="text-xs text-slate-500">Portas separadas por vírgula (padrão: 80,443)</p>
+            <p className="text-xs text-slate-500">
+              Portas TCP testadas no alvo (separadas por vírgula). Se ao menos 1 conectar: UP. Padrão: 80,443.
+            </p>
           </div>
           <button
             type="submit"

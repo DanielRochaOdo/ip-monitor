@@ -102,6 +102,13 @@ export default function DashboardPage() {
     void refresh();
   }, [refresh]);
 
+  // Keep the UI in sync with background cron runs (polling).
+  useEffect(() => {
+    if (!authReady || !session?.access_token) return;
+    const interval = setInterval(() => void refresh(), 30_000);
+    return () => clearInterval(interval);
+  }, [authReady, refresh, session?.access_token]);
+
   const runNow = useCallback(
     async (showToast: boolean) => {
       if (runningRef.current) return;
@@ -111,11 +118,15 @@ export default function DashboardPage() {
       try {
         const result = await runChecksAction();
         setLastRunAt(new Date().toLocaleString());
-        const summaryText = `Verificados: ${result.checked} • Incidentes: +${result.incidentsCreated}/-${result.incidentsResolved} • Emails: ${result.notificationsSent}`;
+        const summaryText = `Verificados: ${result.checked} • Incidentes: +${result.incidentsCreated}/-${result.incidentsResolved} • Emails: ${result.notificationsSent}${result.errors?.length ? ` • Erros: ${result.errors.length}` : ""}`;
         setLastRunSummary(summaryText);
 
         if (showToast) {
-          toast.push({ title: "Verificações executadas", description: summaryText, variant: "success" });
+          toast.push({
+            title: "Verificações executadas",
+            description: result.errors?.length ? `${summaryText}\n${result.errors[0]}` : summaryText,
+            variant: result.errors?.length ? "error" : "success",
+          });
         }
 
         // After running checks, refresh dashboard data.
@@ -134,20 +145,7 @@ export default function DashboardPage() {
     [refresh, toast],
   );
 
-  // Dev-only: if you keep the dashboard open, auto-run checks every 60s.
-  // In production you should rely on Vercel Cron (vercel.json).
-  useEffect(() => {
-    if (process.env.NODE_ENV !== "development") return;
-    if (!authReady || !session?.access_token) return;
-
-    const interval = setInterval(() => {
-      startTransition(() => {
-        void runNow(false);
-      });
-    }, 60_000);
-
-    return () => clearInterval(interval);
-  }, [authReady, runNow, session?.access_token, startTransition]);
+  // In production, checks run via Vercel Cron (vercel.json).
 
   const chartData = useMemo(
     () =>
@@ -162,6 +160,32 @@ export default function DashboardPage() {
   return (
     <>
     <div className="space-y-8">
+      <section className="rounded-2xl border border-emerald-500/40 bg-emerald-500/5 p-4 shadow-inner">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="space-y-1">
+            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Verificações</p>
+            <p className="text-xs text-slate-300">
+              {lastRunAt ? `Última execução: ${lastRunAt}` : "Agendado: a cada 60s (mínimo) via cron."}
+            </p>
+            {lastRunSummary ? <p className="text-xs text-slate-400">{lastRunSummary}</p> : null}
+          </div>
+          <button
+            type="button"
+            disabled={isRunning}
+            aria-busy={isRunning}
+            onClick={() =>
+              startTransition(() => {
+                void runNow(true);
+              })
+            }
+            className={`inline-flex items-center justify-center rounded-lg bg-emerald-500 px-3 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60 ${
+              isRunning ? "animate-pulse" : ""
+            }`}
+          >
+            {isRunning ? "Executando..." : "Executar agora"}
+          </button>
+        </div>
+      </section>
       <section className="grid gap-5 md:grid-cols-3">
         <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-6 shadow-xl">
           <p className="text-xs uppercase tracking-[0.4em] text-slate-400">Total de monitores</p>
@@ -306,26 +330,6 @@ export default function DashboardPage() {
               ));
             })()}
           </div>
-        </div>
-      </section>
-      <section>
-        <div className="flex flex-col gap-2 rounded-2xl border border-emerald-500/40 bg-emerald-500/5 p-4 shadow-inner">
-          <button
-            type="button"
-            disabled={isRunning}
-            onClick={() =>
-              startTransition(() => {
-                void runNow(true);
-              })
-            }
-            className="flex items-center justify-center rounded-xl bg-emerald-500 px-4 py-3 text-sm font-semibold uppercase tracking-[0.3em] text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {isRunning ? "Executando..." : "Executar agora"}
-          </button>
-          <div className="text-center text-xs text-slate-300">
-            {lastRunAt ? `Última execução: ${lastRunAt}` : "Agendado: a cada 60s (mínimo) via cron."}
-          </div>
-          {lastRunSummary ? <div className="text-center text-xs text-slate-400">{lastRunSummary}</div> : null}
         </div>
       </section>
     </div>

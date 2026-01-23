@@ -108,8 +108,10 @@ export function MonitorDetail({ monitor, checks }: MonitorDetailProps) {
             <input
               value={formState.nickname}
               onChange={(event) => setFormState((prev) => ({ ...prev, nickname: event.target.value }))}
+              placeholder="Ex: Servidor ERP"
               className="w-full rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2 text-sm text-slate-200"
             />
+            <p className="text-xs text-slate-500">Nome amigável exibido nos alertas e relatórios.</p>
           </div>
           <div className="space-y-1">
             <label className="text-xs uppercase tracking-[0.4em] text-slate-400">Intervalo (seg)</label>
@@ -125,6 +127,7 @@ export function MonitorDetail({ monitor, checks }: MonitorDetailProps) {
               }
               className="w-full rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2 text-sm text-slate-200"
             />
+            <p className="text-xs text-slate-500">Tempo entre verificações. Mínimo 60s.</p>
           </div>
           <div className="space-y-1">
             <label className="text-xs uppercase tracking-[0.4em] text-slate-400">Limite</label>
@@ -137,14 +140,17 @@ export function MonitorDetail({ monitor, checks }: MonitorDetailProps) {
               }
               className="w-full rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2 text-sm text-slate-200"
             />
+            <p className="text-xs text-slate-500">Falhas consecutivas para considerar DOWN. Padrão: 2.</p>
           </div>
           <div className="space-y-1">
             <label className="text-xs uppercase tracking-[0.4em] text-slate-400">Portas</label>
             <input
               value={formState.ports}
               onChange={(event) => setFormState((prev) => ({ ...prev, ports: event.target.value }))}
+              placeholder="Ex: 80,443"
               className="w-full rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2 text-sm text-slate-200"
             />
+            <p className="text-xs text-slate-500">Lista de portas TCP testadas (separadas por vírgula).</p>
           </div>
         </div>
         <div className="mt-4 flex items-center gap-3">
@@ -154,7 +160,7 @@ export function MonitorDetail({ monitor, checks }: MonitorDetailProps) {
               checked={formState.is_active}
               onChange={(event) => setFormState((prev) => ({ ...prev, is_active: event.target.checked }))}
             />
-            Active
+            Ativo
           </label>
             <button
               type="submit"

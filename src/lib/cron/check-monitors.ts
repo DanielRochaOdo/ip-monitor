@@ -39,6 +39,23 @@ async function fetchUserSettings(userId: string, cache: Map<string, Notification
   return data;
 }
 
+async function fetchUserEmail(userId: string, cache: Map<string, string>) {
+  if (cache.has(userId)) {
+    return cache.get(userId)!;
+  }
+
+  const { data, error } = await supabaseAdmin.auth.admin.getUserById(userId);
+  if (error) {
+    return null;
+  }
+
+  const email = data.user?.email ?? null;
+  if (email) {
+    cache.set(userId, email);
+  }
+  return email;
+}
+
 async function gatherRecentChecks(monitorId: string) {
   const { data } = await supabaseAdmin
     .from("monitor_checks")
@@ -118,6 +135,7 @@ export async function runMonitorChecks(): Promise<RunMonitorsResult> {
 
   const monitors = monitorsData ?? [];
   const settingsCache = new Map<string, NotificationSettingsRow>();
+  const emailCache = new Map<string, string>();
 
   for (const monitor of monitors) {
     const now = new Date().toISOString();
@@ -185,7 +203,10 @@ export async function runMonitorChecks(): Promise<RunMonitorsResult> {
         }
 
         const settings = await fetchUserSettings(monitor.user_id, settingsCache);
-        if (settings && settings.alert_email) {
+        const destinationEmail =
+          settings?.alert_email ?? (await fetchUserEmail(monitor.user_id, emailCache));
+
+        if (destinationEmail) {
           const recentChecks = await gatherRecentChecks(monitor.id);
           const emailPayload =
             derivedStatus === "DOWN"
@@ -205,13 +226,13 @@ export async function runMonitorChecks(): Promise<RunMonitorsResult> {
                 });
 
           const shouldNotify =
-            (derivedStatus === "DOWN" && settings.notify_on_down) ||
-            (derivedStatus === "UP" && settings.notify_on_up);
+            (derivedStatus === "DOWN" && (settings?.notify_on_down ?? true)) ||
+            (derivedStatus === "UP" && (settings?.notify_on_up ?? true));
 
           if (shouldNotify) {
             try {
               await sendMonitorEmail({
-                to: settings.alert_email,
+                to: destinationEmail,
                 subject: emailPayload.subject,
                 html: emailPayload.html,
               });
