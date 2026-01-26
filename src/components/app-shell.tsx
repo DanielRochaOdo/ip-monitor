@@ -5,7 +5,6 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useToast } from "@/components/toast-provider";
 import { useAuthReady, useSupabaseClient, useSession } from "@/components/supabase-provider";
-import { Database } from "@/lib/supabase/types";
 import { Home, Server, PieChart, Settings, LogOut } from "lucide-react";
 import { runChecksAction } from "@/actions/runChecksAction";
 
@@ -19,7 +18,7 @@ import { runChecksAction } from "@/actions/runChecksAction";
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const toast = useToast();
-  const supabase = useSupabaseClient<Database>();
+  const supabase = useSupabaseClient();
   const session = useSession();
   const authReady = useAuthReady();
   const router = useRouter();

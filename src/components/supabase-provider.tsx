@@ -3,7 +3,7 @@
 import { createBrowserClient } from "@supabase/auth-helpers-nextjs";
 import { type Session } from "@supabase/supabase-js";
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import type { Database } from "@/lib/supabase/types";
+import type { Database } from "@/types/database.types";
 
 type SupabaseContextValue = {
   supabase: ReturnType<typeof createBrowserClient> | null;

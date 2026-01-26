@@ -24,7 +24,7 @@ function getSmtpConfig() {
   return { smtpHost, smtpPort, smtpUser, smtpPass, fromAddress };
 }
 
-let cachedTransporter: nodemailer.Transporter | null = null;
+let cachedTransporter: ReturnType<typeof nodemailer.createTransport> | null = null;
 function getTransporter() {
   if (cachedTransporter) return cachedTransporter;
 

@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient, User } from "@supabase/supabase-js";
-import type { Database } from "@/lib/supabase/types";
+import type { Database } from "@/types/database.types";
 import { UnauthorizedError } from "@/lib/errors";
 import { getRequiredEnv } from "@/lib/env";
 

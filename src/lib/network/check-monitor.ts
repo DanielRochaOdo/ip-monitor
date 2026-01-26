@@ -107,5 +107,6 @@ export async function runTcpHealthCheck(
     status: "DOWN",
     latencyMs: null,
     errorMessage: lastError,
+    method: "TCP",
   };
 }

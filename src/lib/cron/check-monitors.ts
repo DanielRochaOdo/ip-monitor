@@ -1,4 +1,4 @@
-import { Database } from "@/lib/supabase/types";
+import { Database } from "@/types/database.types";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { runTcpHealthCheck } from "@/lib/network/check-monitor";
 import { buildDownEmail, buildUpEmail, MonitorCheckSummary } from "@/lib/email/templates";
@@ -31,10 +31,14 @@ async function fetchUserSettings(userId: string, cache: Map<string, Notification
     .eq("user_id", userId)
     .limit(1)
     .maybeSingle();
-  if (data) {
-    cache.set(userId, data);
+
+  // Supabase select typing can degrade to `{}` when relationship metadata is incomplete.
+  // We keep the runtime behavior and cast to the row type explicitly.
+  const settings = data as unknown as NotificationSettingsRow | null;
+  if (settings) {
+    cache.set(userId, settings);
   }
-  return data;
+  return settings;
 }
 
 async function fetchUserEmail(userId: string, cache: Map<string, string>) {
@@ -61,7 +65,14 @@ async function gatherRecentChecks(monitorId: string) {
     .eq("monitor_id", monitorId)
     .order("checked_at", { ascending: false })
     .limit(5);
-  return (data ?? []).map(
+  const rows = (data ?? []) as unknown as Array<{
+    checked_at: string;
+    status: "UP" | "DOWN";
+    latency_ms: number | null;
+    error_message: string | null;
+  }>;
+
+  return rows.map(
     (row): MonitorCheckSummary => ({
       checkedAt: row.checked_at,
       status: row.status,
@@ -133,7 +144,7 @@ export async function runMonitorChecks(): Promise<RunMonitorsResult> {
     throw error;
   }
 
-  const monitors = monitorsData ?? [];
+  const monitors = (monitorsData ?? []) as unknown as MonitorRow[];
   const settingsCache = new Map<string, NotificationSettingsRow>();
   const emailCache = new Map<string, string>();
 
@@ -159,6 +170,7 @@ export async function runMonitorChecks(): Promise<RunMonitorsResult> {
               .order("checked_at", { ascending: false })
               .limit(thresholdLimit)).data ?? []
           : [];
+      const historyRows = history as unknown as Array<{ status: "UP" | "DOWN" }>;
 
       const checkResult = await runTcpHealthCheck(monitor.ip_address, monitor.ports);
 
@@ -173,7 +185,7 @@ export async function runMonitorChecks(): Promise<RunMonitorsResult> {
       const shouldDown = shouldMarkDown(
         checkResult.status,
         monitor,
-        history.map((row) => ({ status: row.status })),
+        historyRows.map((row) => ({ status: row.status })),
       );
       const derivedStatus =
         checkResult.status === "UP" ? "UP" : shouldDown ? "DOWN" : monitor.last_status ?? "UP";

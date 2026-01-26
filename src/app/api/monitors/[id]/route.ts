@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSupabaseClient } from "@/lib/supabase/route";
 import { monitorPatchSchema } from "@/lib/validators/monitor";
 import { UnauthorizedError } from "@/lib/errors";
-import type { Database } from "@/lib/supabase/types";
+import type { Database } from "@/types/database.types";
 
 const toErrorMessage = (error: unknown) => {
   if (error instanceof Error) return error.message;
@@ -18,6 +18,7 @@ const toErrorMessage = (error: unknown) => {
 };
 
 type RouteContext = { params: Promise<{ id: string }> | { id: string } };
+type MonitorUpdate = Database["public"]["Tables"]["monitors"]["Update"];
 
 async function getIdFromContext(context: RouteContext) {
   const params = await Promise.resolve(context.params);
@@ -69,7 +70,7 @@ export async function PATCH(request: Request, context: RouteContext) {
       );
     }
 
-    const updates: Database["public"]["Tables"]["monitors"]["Update"] = {
+    const updates: MonitorUpdate = {
       ...parsed.data,
       updated_at: new Date().toISOString(),
     };
