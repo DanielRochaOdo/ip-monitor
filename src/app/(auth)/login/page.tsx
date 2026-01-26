@@ -3,21 +3,31 @@
 import { useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useSupabaseClient } from "@/components/supabase-provider";
+import { useAuthReady, useSession, useSupabaseClient } from "@/components/supabase-provider";
 import { useToast } from "@/components/toast-provider";
+import { useEffect } from "react";
 
 export default function LoginPage() {
   const supabase = useSupabaseClient();
   const router = useRouter();
   const toast = useToast();
+  const session = useSession();
+  const authReady = useAuthReady();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
 
+  useEffect(() => {
+    if (!authReady) return;
+    if (session?.access_token) {
+      router.replace("/dashboard");
+    }
+  }, [authReady, router, session?.access_token]);
+
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setLoading(true);
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     setLoading(false);
 
     if (error) {
@@ -26,7 +36,12 @@ export default function LoginPage() {
     }
 
     toast.push({ title: "Welcome back!", variant: "success" });
-    router.push("/dashboard");
+    // If the SDK already returned a session, navigate immediately; otherwise retry once.
+    if (!data?.session) {
+      await supabase.auth.getSession();
+    }
+    router.replace("/dashboard");
+    router.refresh();
   };
 
   return (

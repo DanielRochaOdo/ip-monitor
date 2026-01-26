@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
-import { useAuthReady, useSession } from "@/components/supabase-provider";
+import { useAuthReady, useSession, useSupabaseClient } from "@/components/supabase-provider";
 import { useToast } from "@/components/toast-provider";
 
 type SettingsForm = {
@@ -22,6 +22,7 @@ export default function SettingsPage() {
   const [sendingTest, setSendingTest] = useState(false);
   const toast = useToast();
   const session = useSession();
+  const supabase = useSupabaseClient();
   const authReady = useAuthReady();
   const router = useRouter();
 
@@ -35,10 +36,20 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (!authReady) return;
-    if (!session?.access_token) {
-      router.replace("/login");
-    }
-  }, [authReady, router, session?.access_token]);
+    if (session?.access_token) return;
+
+    let cancelled = false;
+    supabase.auth.getSession().then(({ data }) => {
+      if (cancelled) return;
+      if (!data.session?.access_token) {
+        router.replace("/login");
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authReady, router, session?.access_token, supabase]);
 
   useEffect(() => {
     if (!authReady || !session?.access_token) return;

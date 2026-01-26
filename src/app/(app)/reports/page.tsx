@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useToast } from "@/components/toast-provider";
 import { LineChart, Line, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
-import { useAuthReady, useSession } from "@/components/supabase-provider";
+import { useAuthReady, useSession, useSupabaseClient } from "@/components/supabase-provider";
 
 type CheckRecord = {
   id: string;
@@ -36,6 +36,7 @@ export default function ReportsPage() {
   const [loading, setLoading] = useState(false);
   const toast = useToast();
   const session = useSession();
+  const supabase = useSupabaseClient();
   const authReady = useAuthReady();
   const router = useRouter();
 
@@ -49,10 +50,20 @@ export default function ReportsPage() {
 
   useEffect(() => {
     if (!authReady) return;
-    if (!session?.access_token) {
-      router.replace("/login");
-    }
-  }, [authReady, router, session?.access_token]);
+    if (session?.access_token) return;
+
+    let cancelled = false;
+    supabase.auth.getSession().then(({ data }) => {
+      if (cancelled) return;
+      if (!data.session?.access_token) {
+        router.replace("/login");
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authReady, router, session?.access_token, supabase]);
 
   useEffect(() => {
     if (!authReady || !session?.access_token) return;

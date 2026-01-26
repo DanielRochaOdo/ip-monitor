@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useToast } from "@/components/toast-provider";
-import { useAuthReady, useSession } from "@/components/supabase-provider";
+import { useAuthReady, useSession, useSupabaseClient } from "@/components/supabase-provider";
 
 type MonitorResponse = {
   id: string;
@@ -31,6 +31,7 @@ export default function MonitorsPage() {
   const toast = useToast();
   const [creating, setCreating] = useState(false);
   const session = useSession();
+  const supabase = useSupabaseClient();
   const authReady = useAuthReady();
   const router = useRouter();
 
@@ -49,10 +50,20 @@ export default function MonitorsPage() {
 
   useEffect(() => {
     if (!authReady) return;
-    if (!session?.access_token) {
-      router.replace("/login");
-    }
-  }, [authReady, router, session?.access_token]);
+    if (session?.access_token) return;
+
+    let cancelled = false;
+    supabase.auth.getSession().then(({ data }) => {
+      if (cancelled) return;
+      if (!data.session?.access_token) {
+        router.replace("/login");
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authReady, router, session?.access_token, supabase]);
 
   const refreshMonitors = useCallback(async () => {
     if (!authReady || !session?.access_token) {

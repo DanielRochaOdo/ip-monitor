@@ -14,7 +14,7 @@ import {
 } from "recharts";
 
 import { runChecksAction } from "@/actions/runChecksAction";
-import { useAuthReady, useSession } from "@/components/supabase-provider";
+import { useAuthReady, useSession, useSupabaseClient } from "@/components/supabase-provider";
 import { useToast } from "@/components/toast-provider";
 
 type SummaryPayload = {
@@ -50,6 +50,7 @@ export default function DashboardPage() {
   const [monitors, setMonitors] = useState<MonitorPayload[]>([]);
   const [checks, setChecks] = useState<CheckPayload[]>([]);
   const session = useSession();
+  const supabase = useSupabaseClient();
   const authReady = useAuthReady();
   const toast = useToast();
   const router = useRouter();
@@ -68,10 +69,20 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!authReady) return;
-    if (!session?.access_token) {
-      router.replace("/login");
-    }
-  }, [authReady, router, session?.access_token]);
+    if (session?.access_token) return;
+
+    let cancelled = false;
+    supabase.auth.getSession().then(({ data }) => {
+      if (cancelled) return;
+      if (!data.session?.access_token) {
+        router.replace("/login");
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authReady, router, session?.access_token, supabase]);
 
   const refresh = useCallback(async () => {
     if (!authReady || !session?.access_token) {

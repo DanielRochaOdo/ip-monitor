@@ -1,12 +1,11 @@
 "use client";
 
-import { createBrowserClient } from "@supabase/auth-helpers-nextjs";
-import { type Session } from "@supabase/supabase-js";
+import { createClient, type Session } from "@supabase/supabase-js";
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { Database } from "@/types/database.types";
 
 type SupabaseContextValue = {
-  supabase: ReturnType<typeof createBrowserClient> | null;
+  supabase: ReturnType<typeof createClient<Database>> | null;
   session: Session | null;
   isReady: boolean;
 };
@@ -28,7 +27,15 @@ export function SupabaseProvider({ children, initialSession = null }: SupabasePr
       return null;
     }
 
-    return createBrowserClient<Database>(supabaseUrl, supabaseAnonKey);
+    // Use supabase-js directly in the browser (localStorage session). This avoids
+    // cookie-storage requirements that can break client-side navigation on Next 16.
+    return createClient<Database>(supabaseUrl, supabaseAnonKey, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
+      },
+    });
   }, []);
 
   const [session, setSession] = useState<Session | null>(initialSession);

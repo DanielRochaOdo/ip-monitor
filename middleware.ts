@@ -1,31 +1,8 @@
 import { NextResponse } from "next/server";
-import type { NextRequest } from "next/server";
 
-const protectedPaths = ["/dashboard", "/monitors", "/reports", "/settings"];
-const authRoutes = ["/login", "/signup", "/reset-password"];
-
-function hasSession(request: NextRequest) {
-  const accessToken = request.cookies.get("sb-access-token")?.value;
-  return Boolean(accessToken);
-}
-
-export function middleware(request: NextRequest) {
-  const pathname = request.nextUrl.pathname;
-  const sessionExists = hasSession(request);
-
-  if (authRoutes.includes(pathname)) {
-    if (sessionExists) {
-      return NextResponse.redirect(new URL("/dashboard", request.url));
-    }
-    return NextResponse.next();
-  }
-
-  if (protectedPaths.some((path) => pathname === path || pathname.startsWith(`${path}/`))) {
-    if (!sessionExists) {
-      return NextResponse.redirect(new URL("/login", request.url));
-    }
-  }
-
+// Auth is enforced client-side (pages) + via Bearer tokens on API routes.
+// We keep middleware as a no-op to avoid relying on cookie-based session checks.
+export function middleware() {
   return NextResponse.next();
 }
 

@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { MonitorDetail } from "@/components/monitor-detail";
-import { useAuthReady, useSession } from "@/components/supabase-provider";
+import { useAuthReady, useSession, useSupabaseClient } from "@/components/supabase-provider";
 import { useToast } from "@/components/toast-provider";
 
 type MonitorPayload = {
@@ -36,6 +36,7 @@ export default function MonitorDetailPage({ params }: PageProps) {
   const [checks, setChecks] = useState<CheckPayload[]>([]);
   const [loading, setLoading] = useState(true);
   const session = useSession();
+  const supabase = useSupabaseClient();
   const authReady = useAuthReady();
   const router = useRouter();
   const toast = useToast();
@@ -50,10 +51,20 @@ export default function MonitorDetailPage({ params }: PageProps) {
 
   useEffect(() => {
     if (!authReady) return;
-    if (!session?.access_token) {
-      router.replace("/login");
-    }
-  }, [authReady, router, session?.access_token]);
+    if (session?.access_token) return;
+
+    let cancelled = false;
+    supabase.auth.getSession().then(({ data }) => {
+      if (cancelled) return;
+      if (!data.session?.access_token) {
+        router.replace("/login");
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authReady, router, session?.access_token, supabase]);
 
   useEffect(() => {
     if (!authReady || !session?.access_token) return;
