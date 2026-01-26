@@ -2,6 +2,7 @@ import type { Database } from "@/types/database.types";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { buildDownEmail, buildUpEmail, type MonitorCheckSummary } from "@/lib/email/templates";
 import { sendMonitorEmail } from "@/lib/email/send";
+import { parseRecipientEmails } from "@/lib/email/recipients";
 
 type MonitorRow = Database["public"]["Tables"]["monitors"]["Row"];
 type NotificationSettingsRow = Database["public"]["Tables"]["notification_settings"]["Row"];
@@ -172,8 +173,9 @@ export async function notifyIfStateChanged(opts: {
         });
 
   try {
+    const recipients = parseRecipientEmails(destinationEmail);
     await sendMonitorEmail({
-      to: destinationEmail,
+      to: recipients.length ? recipients : destinationEmail,
       subject: emailPayload.subject,
       html: emailPayload.html,
     });
@@ -184,4 +186,3 @@ export async function notifyIfStateChanged(opts: {
 
   return report;
 }
-
