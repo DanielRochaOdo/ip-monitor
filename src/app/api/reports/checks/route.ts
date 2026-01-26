@@ -16,14 +16,17 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const { monitorId, status, from, to, limit, page, format } = parsed.data;
+    const { monitorId, status, source, from, to, limit, page, format } = parsed.data;
     const offset = (page - 1) * limit;
 
     let query = supabase
       .from("monitor_checks")
-      .select("id, monitor_id, checked_at, status, latency_ms, error_message, monitors (nickname, ip_address)", {
+      .select(
+        "id, monitor_id, checked_at, status, latency_ms, error_message, source, agent_id, check_method, monitors (nickname, ip_address)",
+        {
         count: "exact",
-      })
+        },
+      )
       .order("checked_at", { ascending: false });
 
     if (monitorId) {
@@ -32,6 +35,10 @@ export async function GET(request: NextRequest) {
 
     if (status) {
       query = query.eq("status", status);
+    }
+
+    if (source) {
+      query = query.eq("source", source);
     }
 
     if (from) {

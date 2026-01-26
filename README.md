@@ -15,11 +15,12 @@ Full-stack Next.js monitoring platform built with the Bolt.new pattern. Users re
 
 1. **Authentication & protection**
    - `/login`, `/signup`, `/reset-password` for auth flows
-   - Middleware redirects protected paths (`/dashboard`, `/monitors`, `/reports`, `/settings`) if no session
+   - Client-side protection redirects to `/login` if no session
 2. **Monitoring CRUD**
    - Full REST API (`/api/monitors`, `/api/monitors/[id]`) + UI for listing, creating, toggling, deleting, and editing monitors
-3. **Monitoring engine**
-   - Cron job selects due monitors, runs TCP port checks, records `monitor_checks`, tracks status transitions, and manages incidents
+3. **Monitoring engine (Cloud + LAN Agent)**
+   - Cloud cron selects due cloud monitors (`agent_id IS NULL`), runs TCP checks, records `monitor_checks`, tracks transitions, and manages incidents
+   - LAN Agent runs inside your network to monitor private IPs and FortiGate health (ICMP real + API/SNMP), recording checks and triggering alerts
    - Failure threshold (default 2) prevents spamming alerts
 4. **Notifications**
    - Emails include last checks summary, incident timestamps, and dashboard link
@@ -57,12 +58,15 @@ Add those to `.env.local` locally and in your deployment dashboard.
 
 ### Database & Supabase
 
-1. Run the migration in `supabase/migrations/000_initial.sql` to create tables, indexes, and RLS policies.
+1. Run the migrations in `supabase/migrations/` (in order) to create tables, indexes, and RLS policies.
 2. Supabase tables:
    - `monitors`: per-user IPs, intervals, thresholds, `next_check_at`, and status metadata
-   - `monitor_checks`: health check history
+   - `monitor_checks`: health check history (now includes `source=CLOUD|LAN`, `agent_id`, and `check_method`)
    - `monitor_incidents`: state transitions
    - `notification_settings`: per-user email + opt-in flags
+   - `agents`: LAN Agents (token hashed at rest)
+   - `network_devices`: devices (FortiGate etc.)
+   - `device_metrics`: time series metrics collected by LAN Agents
 3. RLS policies allow users only to access their data; service-role queries bypass RLS for cron tasks.
 
 ### Cron & monitoring
@@ -100,10 +104,15 @@ export default {
 };
 ```
 
-#### Important note about private IPs
+#### Private IPs + FortiGate: use the LAN Agent
 
-If you are monitoring private IPs (RFC1918 like `192.168.x.x`, `10.x.x.x`, `172.16-31.x.x`), a cloud scheduler (Vercel/Cloudflare) will NOT be able to reach them. In that case you need to run the scheduler inside your network (a small always-on VM/PC/Raspberry Pi) calling `/api/cron/check-monitors` with `cron-secret`.
-- Each run picks monitors whose `next_check_at <= now()`, records a check, updates `next_check_at`, and only sends emails on status changes.
+If you are monitoring private IPs (RFC1918 like `192.168.x.x`, `10.x.x.x`, `172.16-31.x.x`), a cloud scheduler (Vercel/Cloudflare) will NOT be able to reach them. Use the LAN Agent instead:
+
+1) In the app: go to `/settings` and create an "Agente LAN" (you will get a token once).
+2) Create monitors with origem "LAN Agent" and (optionally) check_type `ICMP` / `TCP` / `HTTP`.
+3) Run the agent inside the LAN:
+   - `lan-agent/README.md` has Docker + local instructions
+4) For FortiGate monitoring, read `docs/fortigate-monitoring.md`.
 
 ### Local dev auto-checks
 
@@ -114,8 +123,11 @@ If you are monitoring private IPs (RFC1918 like `192.168.x.x`, `10.x.x.x`, `172.
 
 - `GET/POST /api/monitors`, `GET/PATCH/DELETE /api/monitors/:id`
 - `GET /api/reports/summary`, `GET /api/reports/checks?monitorId&status&from&to&format=csv`
+- `GET /api/reports/devices` (latest FortiGate metrics per device)
 - `GET /api/incidents?monitorId&status=open|resolved`
 - `GET/PATCH /api/settings/notifications`
+- `GET/POST /api/agents` (create and list LAN Agents; token is returned only once on create)
+- `POST /api/agent/pull`, `POST /api/agent/report` (LAN Agent protocol)
 - `GET/POST /api/cron/check-monitors` (header `CRON_SECRET`)
 
 Server utilities:

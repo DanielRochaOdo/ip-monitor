@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSupabaseClient } from "@/lib/supabase/route";
 import { monitorCreateSchema } from "@/lib/validators/monitor";
 import { UnauthorizedError } from "@/lib/errors";
+import { isPrivateIpv4 } from "@/lib/network/ip";
 
 const toErrorMessage = (error: unknown) =>
   error instanceof Error ? error.message : typeof error === "string" ? error : "Unknown error";
@@ -44,12 +45,35 @@ export async function POST(request: Request) {
       );
     }
 
+    const agentId = parsed.data.agent_id ?? null;
+    if (agentId) {
+      const { data: agent, error: agentError } = await supabase
+        .from("agents")
+        .select("id")
+        .eq("id", agentId)
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (agentError) {
+        throw agentError;
+      }
+      if (!agent) {
+        return NextResponse.json({ error: "Agente LAN invalido" }, { status: 400 });
+      }
+    }
+
+    const checkType = parsed.data.check_type ?? "TCP";
+    const inferredIsPrivate = isPrivateIpv4(parsed.data.ip_address);
+
     const monitor = await supabase
       .from("monitors")
       .insert({
         ...parsed.data,
+        check_type: checkType,
         user_id: user.id,
         ports: parsed.data.ports ?? [80, 443],
+        agent_id: agentId,
+        is_private: parsed.data.is_private ?? inferredIsPrivate,
+        success_threshold: parsed.data.success_threshold ?? 1,
         next_check_at: new Date().toISOString(),
       })
       .select("*")

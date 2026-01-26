@@ -8,7 +8,8 @@ const dateString = z
 
 export const checksQuerySchema = z.object({
   monitorId: z.string().uuid().optional(),
-  status: z.enum(["UP", "DOWN"]).optional(),
+  status: z.enum(["UP", "DOWN", "DEGRADED"]).optional(),
+  source: z.enum(["CLOUD", "LAN"]).optional(),
   from: dateString.optional(),
   to: dateString.optional(),
   format: z.enum(["csv", "json"]).optional(),

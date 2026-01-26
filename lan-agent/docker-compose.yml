@@ -1,0 +1,13 @@
+services:
+  lan-agent:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    # Required for ICMP ping in most Docker environments.
+    cap_add:
+      - NET_RAW
+    # If your FortiGate uses self-signed HTTPS, you may need:
+    # environment:
+    #   - NODE_TLS_REJECT_UNAUTHORIZED=0
+

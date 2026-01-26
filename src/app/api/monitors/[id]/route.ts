@@ -3,6 +3,7 @@ import { getServerSupabaseClient } from "@/lib/supabase/route";
 import { monitorPatchSchema } from "@/lib/validators/monitor";
 import { UnauthorizedError } from "@/lib/errors";
 import type { Database } from "@/types/database.types";
+import { isPrivateIpv4 } from "@/lib/network/ip";
 
 const toErrorMessage = (error: unknown) => {
   if (error instanceof Error) return error.message;
@@ -59,7 +60,7 @@ export async function GET(request: Request, context: RouteContext) {
 export async function PATCH(request: Request, context: RouteContext) {
   try {
     const id = await getIdFromContext(context);
-    const { supabase } = await getServerSupabaseClient(request);
+    const { supabase, user } = await getServerSupabaseClient(request);
     const payload = await request.json();
     const parsed = monitorPatchSchema.safeParse(payload);
 
@@ -75,8 +76,34 @@ export async function PATCH(request: Request, context: RouteContext) {
       updated_at: new Date().toISOString(),
     };
 
+    if (parsed.data.agent_id) {
+      const { data: agent, error: agentError } = await supabase
+        .from("agents")
+        .select("id")
+        .eq("id", parsed.data.agent_id)
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (agentError) {
+        throw agentError;
+      }
+      if (!agent) {
+        return NextResponse.json({ error: "Agente LAN invalido" }, { status: 400 });
+      }
+    }
+
+    if (parsed.data.check_type === "HTTP") {
+      const url = parsed.data.http_url;
+      if (!url) {
+        return NextResponse.json({ error: "http_url e obrigatorio quando check_type=HTTP" }, { status: 400 });
+      }
+    }
+
     if (parsed.data.ping_interval_seconds !== undefined) {
       updates.next_check_at = new Date().toISOString();
+    }
+
+    if (parsed.data.ip_address) {
+      updates.is_private = isPrivateIpv4(parsed.data.ip_address);
     }
 
     const { data, error } = await supabase

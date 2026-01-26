@@ -1,6 +1,6 @@
 export type MonitorCheckSummary = {
   checkedAt: string;
-  status: "UP" | "DOWN";
+  status: "UP" | "DOWN" | "DEGRADED";
   latencyMs: number | null;
   errorMessage: string | null;
 };
@@ -18,7 +18,7 @@ const renderChecksTable = (checks: MonitorCheckSummary) => {
     <tr>
       <td style="padding:6px 12px;border-bottom:1px solid #eee;">${new Date(checks.checkedAt).toLocaleString()}</td>
       <td style="padding:6px 12px;border-bottom:1px solid #eee;">${checks.status}</td>
-      <td style="padding:6px 12px;border-bottom:1px solid #eee;">${checks.latencyMs ? `${checks.latencyMs}ms` : "—"}</td>
+      <td style="padding:6px 12px;border-bottom:1px solid #eee;">${checks.latencyMs ? `${checks.latencyMs}ms` : "--"}</td>
       <td style="padding:6px 12px;border-bottom:1px solid #eee;">${checks.errorMessage ?? "OK"}</td>
     </tr>
   `;
@@ -84,3 +84,4 @@ export function buildUpEmail(props: BaseEmailProps) {
     }),
   };
 }
+

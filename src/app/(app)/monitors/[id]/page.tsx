@@ -1,5 +1,6 @@
-/* eslint-disable react-hooks/set-state-in-effect */
 "use client";
+
+/* eslint-disable react-hooks/set-state-in-effect */
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -13,18 +14,30 @@ type MonitorPayload = {
   ip_address: string;
   ping_interval_seconds: number;
   failure_threshold: number;
+  success_threshold: number;
+  check_type: "TCP" | "HTTP" | "ICMP";
   ports: number[];
+  port: number | null;
+  http_url: string | null;
+  http_method: "GET" | "HEAD" | null;
+  http_expected_status: number | null;
+  agent_id: string | null;
   is_active: boolean;
   last_status: "UP" | "DOWN" | null;
+  status: "UP" | "DOWN" | "DEGRADED" | null;
   last_checked_at: string | null;
+  last_latency_ms: number | null;
+  last_error: string | null;
 };
 
 type CheckPayload = {
   id: string;
   checked_at: string;
-  status: "UP" | "DOWN";
+  status: "UP" | "DOWN" | "DEGRADED";
   latency_ms: number | null;
   error_message: string | null;
+  source: "CLOUD" | "LAN";
+  check_method: string | null;
 };
 
 type PageProps = {
@@ -75,7 +88,7 @@ export default function MonitorDetailPage({ params }: PageProps) {
     const load = async () => {
       const [monitorRes, checksRes] = await Promise.all([
         fetch(`/api/monitors/${params.id}`, { headers: authHeaders, cache: "no-store" }),
-        fetch(`/api/reports/checks?monitorId=${params.id}&limit=10`, {
+        fetch(`/api/reports/checks?monitorId=${params.id}&limit=50`, {
           headers: authHeaders,
           cache: "no-store",
         }),
@@ -84,7 +97,7 @@ export default function MonitorDetailPage({ params }: PageProps) {
       if (cancelled) return;
 
       if (!monitorRes.ok) {
-        toast.push({ title: "Monitor não encontrado", variant: "error" });
+        toast.push({ title: "Monitor nao encontrado", variant: "error" });
         router.replace("/monitors");
         return;
       }

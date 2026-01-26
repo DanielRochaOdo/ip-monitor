@@ -1,0 +1,2 @@
+declare module "net-snmp";
+

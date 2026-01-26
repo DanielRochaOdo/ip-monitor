@@ -14,6 +14,8 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Cloudflare worker lives in a nested project and should not be linted by the Next.js app config.
     "ipmonitor-worker/**",
+    // LAN Agent is a separate Node.js project.
+    "lan-agent/**",
   ]),
 ]);
 

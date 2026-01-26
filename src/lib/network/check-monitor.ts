@@ -30,6 +30,15 @@ async function attemptPort(ipAddress: string, port: number, timeoutMs = defaultT
     });
 
     socket.once("error", (err) => {
+      // For "host reachability" semantics, a connection refused (RST) still
+      // indicates the target is reachable (the port is simply closed).
+      const errno = err as NodeJS.ErrnoException;
+      if (errno?.code === "ECONNREFUSED") {
+        const latency = Date.now() - start;
+        cleanup();
+        resolve(latency);
+        return;
+      }
       cleanup();
       reject(err);
     });
@@ -85,16 +94,24 @@ export async function runTcpHealthCheck(
   };
 
   for (const port of ports) {
-    try {
-      const latency = await attemptPort(ipAddress, port, timeoutMs);
-      return {
-        method: "TCP",
-        status: "UP",
-        latencyMs: latency,
-        errorMessage: null,
-      };
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
+    // One retry helps reduce false negatives caused by transient packet loss/timeouts.
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        const latency = await attemptPort(ipAddress, port, timeoutMs);
+        return {
+          method: "TCP",
+          status: "UP",
+          latencyMs: latency,
+          errorMessage: null,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        lastError = `port ${port} (attempt ${attempt}): ${message}`;
+        // Only retry on timeouts; other errors usually won't change on immediate retry.
+        if (!message.toLowerCase().includes("timed out")) {
+          break;
+        }
+      }
     }
   }
 
@@ -106,7 +123,9 @@ export async function runTcpHealthCheck(
   return {
     status: "DOWN",
     latencyMs: null,
-    errorMessage: lastError,
+    errorMessage: lastError
+      ? `${lastError}; ICMP ping falhou ou nao esta disponivel neste ambiente`
+      : "ICMP ping falhou ou nao esta disponivel neste ambiente",
     method: "TCP",
   };
 }

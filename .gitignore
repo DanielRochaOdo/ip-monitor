@@ -20,6 +20,7 @@
 
 # production
 /build
+lan-agent/dist/
 
 # misc
 .DS_Store

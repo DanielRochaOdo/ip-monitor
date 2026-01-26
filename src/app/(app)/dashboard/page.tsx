@@ -3,15 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import {
-  LineChart,
-  Line,
-  ResponsiveContainer,
-  XAxis,
-  YAxis,
-  Tooltip,
-  CartesianGrid,
-} from "recharts";
+import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { runChecksAction } from "@/actions/runChecksAction";
 import { useAuthReady, useSession, useSupabaseClient } from "@/components/supabase-provider";
@@ -37,24 +29,57 @@ type MonitorPayload = {
   ip_address: string;
   ping_interval_seconds: number;
   last_status: "UP" | "DOWN" | null;
+  status: "UP" | "DOWN" | "DEGRADED" | null;
+  agent_id: string | null;
+  check_type: "TCP" | "HTTP" | "ICMP";
   last_checked_at: string | null;
 };
 
 type CheckPayload = {
   checked_at: string;
-  status: "UP" | "DOWN";
+  status: "UP" | "DOWN" | "DEGRADED";
+};
+
+type DevicesPayload = {
+  devices: Array<{
+    device: {
+      id: string;
+      site: string;
+      hostname: string | null;
+      model: string | null;
+      wan_public_ips: string[];
+      lan_ip: string | null;
+      mgmt_method: string;
+    };
+    latest: {
+      checked_at: string;
+      status: "UP" | "DOWN" | "DEGRADED";
+      cpu_percent: number | null;
+      mem_percent: number | null;
+      sessions: number | null;
+      uptime_seconds: number | null;
+      wan1_ip: string | null;
+      wan1_status: string | null;
+      wan2_ip: string | null;
+      wan2_status: string | null;
+      error: string | null;
+    } | null;
+  }>;
 };
 
 export default function DashboardPage() {
   const [summary, setSummary] = useState<SummaryPayload | null>(null);
   const [monitors, setMonitors] = useState<MonitorPayload[]>([]);
   const [checks, setChecks] = useState<CheckPayload[]>([]);
+  const [devices, setDevices] = useState<DevicesPayload["devices"]>([]);
+
   const session = useSession();
   const supabase = useSupabaseClient();
   const authReady = useAuthReady();
   const toast = useToast();
   const router = useRouter();
-  const [isRunning, startTransition] = useTransition();
+
+  const [isPending, startTransition] = useTransition();
   const runningRef = useRef(false);
   const [lastRunAt, setLastRunAt] = useState<string | null>(null);
   const [lastRunSummary, setLastRunSummary] = useState<string | null>(null);
@@ -85,27 +110,24 @@ export default function DashboardPage() {
   }, [authReady, router, session?.access_token, supabase]);
 
   const refresh = useCallback(async () => {
-    if (!authReady || !session?.access_token) {
-      return;
-    }
+    if (!authReady || !session?.access_token) return;
 
-    const [summaryRes, monitorsRes, checksRes] = await Promise.all([
+    const [summaryRes, monitorsRes, checksRes, devicesRes] = await Promise.all([
       fetch("/api/reports/summary", { headers: authHeaders }),
       fetch("/api/monitors", { headers: authHeaders }),
-      fetch("/api/reports/checks?limit=12", { headers: authHeaders }),
+      fetch("/api/reports/checks?limit=24", { headers: authHeaders }),
+      fetch("/api/reports/devices", { headers: authHeaders }),
     ]);
 
-    if (summaryRes.ok) {
-      setSummary(await summaryRes.json());
-    }
-
-    if (monitorsRes.ok) {
-      setMonitors((await monitorsRes.json()) ?? []);
-    }
-
+    if (summaryRes.ok) setSummary((await summaryRes.json()) as SummaryPayload);
+    if (monitorsRes.ok) setMonitors(((await monitorsRes.json()) as MonitorPayload[] | null) ?? []);
     if (checksRes.ok) {
       const data = (await checksRes.json()) as { checks?: CheckPayload[] } | null;
       setChecks(data?.checks ?? []);
+    }
+    if (devicesRes.ok) {
+      const data = (await devicesRes.json()) as DevicesPayload | null;
+      setDevices(data?.devices ?? []);
     }
   }, [authHeaders, authReady, session?.access_token]);
 
@@ -113,181 +135,201 @@ export default function DashboardPage() {
     void refresh();
   }, [refresh]);
 
-  // Keep the UI in sync with background cron runs (polling).
   useEffect(() => {
     if (!authReady || !session?.access_token) return;
     const interval = setInterval(() => void refresh(), 30_000);
     return () => clearInterval(interval);
   }, [authReady, refresh, session?.access_token]);
 
-  const runNow = useCallback(
-    async (showToast: boolean) => {
-      if (runningRef.current) return;
-      runningRef.current = true;
-      setLastRunSummary(null);
+  const runNow = useCallback(() => {
+    if (runningRef.current) return;
+    runningRef.current = true;
+    setLastRunSummary(null);
 
+    startTransition(async () => {
       try {
         const result = await runChecksAction();
         setLastRunAt(new Date().toLocaleString());
-        const summaryText = `Verificados: ${result.checked} • Incidentes: +${result.incidentsCreated}/-${result.incidentsResolved} • Emails: ${result.notificationsSent}${result.errors?.length ? ` • Erros: ${result.errors.length}` : ""}`;
+        const summaryText = `Verificados: ${result.checked} | Incidentes: +${result.incidentsCreated}/-${result.incidentsResolved} | Emails: ${result.notificationsSent}${result.errors?.length ? ` | Erros: ${result.errors.length}` : ""}`;
         setLastRunSummary(summaryText);
-
-        if (showToast) {
-          toast.push({
-            title: "Verificações executadas",
-            description: result.errors?.length ? `${summaryText}\n${result.errors[0]}` : summaryText,
-            variant: result.errors?.length ? "error" : "success",
-          });
-        }
-
-        // After running checks, refresh dashboard data.
+        toast.push({
+          title: "Verificacoes executadas",
+          description: result.errors?.length ? `${summaryText}\n${result.errors[0]}` : summaryText,
+          variant: result.errors?.length ? "error" : "success",
+        });
         await refresh();
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Erro ao executar verificações";
+        const message = error instanceof Error ? error.message : "Erro ao executar verificacoes";
         setLastRunAt(new Date().toLocaleString());
         setLastRunSummary(message);
-        if (showToast) {
-          toast.push({ title: "Falha ao executar verificações", description: message, variant: "error" });
-        }
+        toast.push({ title: "Falha ao executar verificacoes", description: message, variant: "error" });
       } finally {
         runningRef.current = false;
       }
-    },
-    [refresh, toast],
-  );
+    });
+  }, [refresh, startTransition, toast]);
 
-  // In production, checks run via Vercel Cron (vercel.json).
-
-  const chartData = useMemo(
-    () =>
-      checks.map((check) => ({
-        name: new Date(check.checked_at).toLocaleTimeString(),
-        up: check.status === "UP" ? 1 : 0,
-        down: check.status === "DOWN" ? 1 : 0,
-      })),
-    [checks],
-  );
+  const chartData = useMemo(() => {
+    const bucket: Record<string, { name: string; up: number; down: number }> = {};
+    for (const check of checks) {
+      const d = new Date(check.checked_at);
+      const key = `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
+      if (!bucket[key]) bucket[key] = { name: key, up: 0, down: 0 };
+      if (check.status === "DOWN") bucket[key].down += 1;
+      else bucket[key].up += 1; // UP + DEGRADED
+    }
+    return Object.values(bucket).slice(-24);
+  }, [checks]);
 
   return (
-    <>
     <div className="space-y-8">
-      <section className="rounded-2xl border border-emerald-500/40 bg-emerald-500/5 p-4 shadow-inner">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="space-y-1">
-            <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Verificações</p>
-            <p className="text-xs text-slate-300">
-              {lastRunAt ? `Última execução: ${lastRunAt}` : "Agendado: a cada 60s (mínimo) via cron."}
-            </p>
-            {lastRunSummary ? <p className="text-xs text-slate-400">{lastRunSummary}</p> : null}
-          </div>
+      <section className="flex flex-col gap-4 rounded-2xl border border-white/10 bg-slate-900/60 p-6 shadow-xl sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-xs uppercase tracking-[0.4em] text-slate-400">Dashboard</p>
+          <h1 className="text-2xl font-semibold text-white">Visao geral</h1>
+          <p className="mt-1 text-sm text-slate-400">
+            {lastRunAt ? `Ultima execucao manual: ${lastRunAt}` : "Execucoes automaticas rodam via cron/agent."}
+          </p>
+          {lastRunSummary ? <p className="mt-1 text-xs text-slate-500">{lastRunSummary}</p> : null}
+        </div>
+        <div className="flex items-center gap-3">
+          <Link
+            href="/monitors"
+            className="rounded-full border border-white/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-slate-200"
+          >
+            Monitores
+          </Link>
           <button
             type="button"
-            disabled={isRunning}
-            aria-busy={isRunning}
-            onClick={() =>
-              startTransition(() => {
-                void runNow(true);
-              })
-            }
-            className={`inline-flex items-center justify-center rounded-lg bg-emerald-500 px-3 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60 ${
-              isRunning ? "animate-pulse" : ""
-            }`}
+            onClick={runNow}
+            disabled={isPending}
+            className="rounded-full bg-emerald-500 px-4 py-2 text-xs font-semibold uppercase tracking-[0.3em] text-slate-950 transition hover:bg-emerald-400 disabled:opacity-60"
           >
-            {isRunning ? "Executando..." : "Executar agora"}
+            {isPending ? "Executando..." : "Executar agora"}
           </button>
         </div>
       </section>
-      <section className="grid gap-5 md:grid-cols-3">
-        <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-6 shadow-xl">
-          <p className="text-xs uppercase tracking-[0.4em] text-slate-400">Total de monitores</p>
-          <p className="mt-4 text-4xl font-semibold text-white">
-            {summary ? summary.totalMonitors : "—"}
-          </p>
-          <p className="text-sm text-slate-500">Active endpoints</p>
+
+      <section className="grid gap-4 md:grid-cols-3">
+        <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-5 shadow-xl">
+          <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Monitores</p>
+          <p className="mt-2 text-3xl font-semibold text-white">{summary?.totalMonitors ?? "--"}</p>
         </div>
-        <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-6 shadow-xl">
-          <p className="text-xs uppercase tracking-[0.4em] text-slate-400">Operacionais</p>
-          <p className="mt-4 text-4xl font-semibold text-emerald-400">
-            {summary ? summary.up : "—"}
-          </p>
-          <p className="text-sm text-slate-500">Healthy monitors</p>
+        <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-5 shadow-xl">
+          <p className="text-xs uppercase tracking-[0.3em] text-slate-400">UP</p>
+          <p className="mt-2 text-3xl font-semibold text-emerald-300">{summary?.up ?? "--"}</p>
         </div>
-        <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-6 shadow-xl">
-          <p className="text-xs uppercase tracking-[0.4em] text-slate-400">Indisponíveis</p>
-          <p className="mt-4 text-4xl font-semibold text-rose-400">
-            {summary ? summary.down : "—"}
-          </p>
-          <p className="text-sm text-slate-500">Incidents open</p>
+        <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-5 shadow-xl">
+          <p className="text-xs uppercase tracking-[0.3em] text-slate-400">DOWN</p>
+          <p className="mt-2 text-3xl font-semibold text-rose-300">{summary?.down ?? "--"}</p>
         </div>
       </section>
 
-      <section className="grid gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-2 space-y-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs uppercase tracking-[0.4em] text-slate-400">Monitores</p>
-              <h2 className="text-2xl font-semibold">Sua frota</h2>
-            </div>
-            <Link
-              href="/monitors"
-              className="text-xs font-semibold uppercase tracking-[0.3em] text-emerald-300"
-            >
-              View all
-            </Link>
-          </div>
-          <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4 shadow-xl">
-            <div className="overflow-hidden rounded-xl border border-white/5 bg-slate-950/60">
-              <div className="grid grid-cols-5 gap-2 px-3 py-2 text-xs font-semibold uppercase text-slate-400">
-                <span className="col-span-2">Monitor</span>
-                <span>IP</span>
-                <span>Interval</span>
-                <span>Status</span>
-              </div>
-              <div className="divide-y divide-white/5">
-                {monitors.length ? (
-                  monitors.slice(0, 6).map((monitor) => (
-                    <div
-                      key={monitor.id}
-                      className="grid grid-cols-5 gap-2 px-3 py-3 text-sm text-slate-200"
+      <section className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-semibold text-white">FortiGate (LAN Agent)</h2>
+          <Link href="/settings" className="text-xs font-semibold uppercase tracking-[0.3em] text-emerald-300">
+            Agentes
+          </Link>
+        </div>
+        <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4 shadow-xl">
+          {devices.length ? (
+            <div className="divide-y divide-white/5">
+              {devices.map(({ device, latest }) => (
+                <div key={device.id} className="flex flex-col gap-2 py-3 text-sm">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="font-semibold text-white">
+                        {device.site} {device.hostname ? `- ${device.hostname}` : ""}
+                      </p>
+                      <p className="text-xs text-slate-400">
+                        LAN: {device.lan_ip ?? "--"} | WAN(s): {(device.wan_public_ips ?? []).join(", ") || "--"}
+                      </p>
+                      {latest?.error ? <p className="text-xs text-slate-500">Erro: {latest.error}</p> : null}
+                    </div>
+                    <span
+                      className={`h-fit rounded-full px-3 py-1 text-xs font-semibold ${
+                        latest?.status === "DOWN"
+                          ? "bg-rose-500/20 text-rose-300"
+                          : latest?.status === "DEGRADED"
+                            ? "bg-amber-500/20 text-amber-200"
+                            : "bg-emerald-500/20 text-emerald-300"
+                      }`}
                     >
+                      {latest?.status ?? "--"}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs text-slate-300 sm:grid-cols-6">
+                    <span>CPU: {latest?.cpu_percent ?? "--"}%</span>
+                    <span>Mem: {latest?.mem_percent ?? "--"}%</span>
+                    <span>Sessoes: {latest?.sessions ?? "--"}</span>
+                    <span>WAN1: {latest?.wan1_ip ?? "--"}</span>
+                    <span>WAN2: {latest?.wan2_ip ?? "--"}</span>
+                    <span>Atualizado: {latest?.checked_at ? new Date(latest.checked_at).toLocaleTimeString() : "--"}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-slate-500">Nenhum device cadastrado ainda.</p>
+          )}
+        </div>
+      </section>
+
+      <section className="grid gap-6 lg:grid-cols-2">
+        <div className="space-y-3">
+          <h2 className="text-xl font-semibold text-white">Monitores</h2>
+          <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4 shadow-xl">
+            <div className="grid grid-cols-6 gap-2 px-3 py-2 text-xs font-semibold uppercase text-slate-400">
+              <span className="col-span-2">Monitor</span>
+              <span>Origem</span>
+              <span>Tipo</span>
+              <span>Intervalo</span>
+              <span>Status</span>
+            </div>
+            <div className="divide-y divide-white/5">
+              {monitors.length ? (
+                monitors.slice(0, 8).map((monitor) => {
+                  const surface = monitor.status ?? (monitor.last_status ?? "UP");
+                  const origin = monitor.agent_id ? "LAN" : "CLOUD";
+                  return (
+                    <div key={monitor.id} className="grid grid-cols-6 gap-2 px-3 py-3 text-sm text-slate-200">
                       <span className="col-span-2 font-semibold">{monitor.nickname}</span>
-                      <span>{monitor.ip_address}</span>
+                      <span className="text-xs uppercase tracking-[0.2em] text-slate-400">{origin}</span>
+                      <span className="text-xs uppercase tracking-[0.2em] text-slate-400">{monitor.check_type}</span>
                       <span>{monitor.ping_interval_seconds}s</span>
                       <span>
                         <span
                           className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                            monitor.last_status === "DOWN"
+                            surface === "DOWN"
                               ? "bg-rose-500/20 text-rose-300"
-                              : "bg-emerald-500/20 text-emerald-300"
+                              : surface === "DEGRADED"
+                                ? "bg-amber-500/20 text-amber-200"
+                                : "bg-emerald-500/20 text-emerald-300"
                           }`}
                         >
-                          {monitor.last_status ?? "UP"}
+                          {surface}
                         </span>
                       </span>
                     </div>
-                  ))
-                ) : (
-                  <div className="px-3 py-3 text-sm text-slate-500">No monitors yet.</div>
-                )}
-              </div>
+                  );
+                })
+              ) : (
+                <div className="px-3 py-3 text-sm text-slate-500">Nenhum monitor ainda.</div>
+              )}
             </div>
           </div>
         </div>
-            <div className="space-y-4">
-          <h2 className="text-xs uppercase tracking-[0.4em] text-slate-400">Verificações recentes</h2>
+
+        <div className="space-y-3">
+          <h2 className="text-xl font-semibold text-white">Verificacoes recentes</h2>
           <div className="h-64 rounded-2xl border border-white/10 bg-slate-900/60 p-4 shadow-xl">
             {chartData.length ? (
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={chartData}>
                   <CartesianGrid strokeDasharray="4 6" stroke="#1e293b" />
                   <XAxis dataKey="name" stroke="#94a3b8" />
-                  <YAxis
-                    domain={[0, 1]}
-                    ticks={[0, 1]}
-                    stroke="#94a3b8"
-                    axisLine={false}
-                    tickLine={false}
-                  />
+                  <YAxis domain={[0, "dataMax + 1"]} stroke="#94a3b8" axisLine={false} tickLine={false} />
                   <Tooltip
                     contentStyle={{ backgroundColor: "#0f172a", border: "none" }}
                     labelStyle={{ color: "#fff" }}
@@ -298,7 +340,7 @@ export default function DashboardPage() {
                 </LineChart>
               </ResponsiveContainer>
             ) : (
-              <p className="text-sm text-slate-500">Awaiting check history.</p>
+              <p className="text-sm text-slate-500">Aguardando historico de checks.</p>
             )}
           </div>
         </div>
@@ -306,9 +348,9 @@ export default function DashboardPage() {
 
       <section className="space-y-3">
         <div className="flex items-center justify-between">
-          <h2 className="text-xl font-semibold text-white">Latest incidents</h2>
+          <h2 className="text-xl font-semibold text-white">Ultimos incidentes</h2>
           <Link href="/reports" className="text-xs font-semibold uppercase tracking-[0.3em] text-emerald-300">
-            Reports
+            Relatorios
           </Link>
         </div>
         <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4 shadow-xl">
@@ -316,17 +358,15 @@ export default function DashboardPage() {
             {(() => {
               const incidents = summary?.lastIncidents ?? [];
               if (!incidents.length) {
-                return <p className="py-3 text-sm text-slate-500">No incidents yet.</p>;
+                return <p className="py-3 text-sm text-slate-500">Nenhum incidente ainda.</p>;
               }
               return incidents.map((incident) => (
                 <div key={incident.id} className="flex flex-col gap-1 py-3 text-sm">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="font-semibold text-white">
-                        {incident.nickname ?? incident.monitorId}
-                      </p>
+                      <p className="font-semibold text-white">{incident.nickname ?? incident.monitorId}</p>
                       <p className="text-xs uppercase tracking-[0.3em] text-slate-500">
-                        {incident.ip ?? "Unknown IP"} • started {new Date(incident.startedAt).toLocaleString()}
+                        {incident.ip ?? "--"} | inicio {new Date(incident.startedAt).toLocaleString()}
                       </p>
                     </div>
                     <span
@@ -334,7 +374,7 @@ export default function DashboardPage() {
                         incident.resolvedAt ? "bg-emerald-500/20 text-emerald-300" : "bg-rose-500/20 text-rose-300"
                       }`}
                     >
-                      {incident.resolvedAt ? "Resolved" : "Active"}
+                      {incident.resolvedAt ? "Resolvido" : "Ativo"}
                     </span>
                   </div>
                 </div>
@@ -344,6 +384,6 @@ export default function DashboardPage() {
         </div>
       </section>
     </div>
-    </>
   );
 }
+

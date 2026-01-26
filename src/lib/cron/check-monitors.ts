@@ -1,12 +1,11 @@
 import { Database } from "@/types/database.types";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { runTcpHealthCheck } from "@/lib/network/check-monitor";
-import { buildDownEmail, buildUpEmail, MonitorCheckSummary } from "@/lib/email/templates";
-import { sendMonitorEmail } from "@/lib/email/send";
+import { notifyIfStateChanged } from "@/lib/monitoring/alerts";
+import { deriveMonitorState } from "@/lib/monitoring/derive-monitor-state";
 import { getAppUrl } from "@/lib/env";
 
 type MonitorRow = Database["public"]["Tables"]["monitors"]["Row"];
-type NotificationSettingsRow = Database["public"]["Tables"]["notification_settings"]["Row"];
 
 type CronReport = {
   checked: number;
@@ -20,107 +19,6 @@ export type RunMonitorsResult = CronReport;
 
 const toErrorMessage = (error: unknown) =>
   error instanceof Error ? error.message : typeof error === "string" ? error : JSON.stringify(error);
-
-async function fetchUserSettings(userId: string, cache: Map<string, NotificationSettingsRow>) {
-  if (cache.has(userId)) {
-    return cache.get(userId)!;
-  }
-  const { data } = await supabaseAdmin
-    .from("notification_settings")
-    .select("*")
-    .eq("user_id", userId)
-    .limit(1)
-    .maybeSingle();
-
-  // Supabase select typing can degrade to `{}` when relationship metadata is incomplete.
-  // We keep the runtime behavior and cast to the row type explicitly.
-  const settings = data as unknown as NotificationSettingsRow | null;
-  if (settings) {
-    cache.set(userId, settings);
-  }
-  return settings;
-}
-
-async function fetchUserEmail(userId: string, cache: Map<string, string>) {
-  if (cache.has(userId)) {
-    return cache.get(userId)!;
-  }
-
-  const { data, error } = await supabaseAdmin.auth.admin.getUserById(userId);
-  if (error) {
-    return null;
-  }
-
-  const email = data.user?.email ?? null;
-  if (email) {
-    cache.set(userId, email);
-  }
-  return email;
-}
-
-async function gatherRecentChecks(monitorId: string) {
-  const { data } = await supabaseAdmin
-    .from("monitor_checks")
-    .select("checked_at, status, latency_ms, error_message")
-    .eq("monitor_id", monitorId)
-    .order("checked_at", { ascending: false })
-    .limit(5);
-  const rows = (data ?? []) as unknown as Array<{
-    checked_at: string;
-    status: "UP" | "DOWN";
-    latency_ms: number | null;
-    error_message: string | null;
-  }>;
-
-  return rows.map(
-    (row): MonitorCheckSummary => ({
-      checkedAt: row.checked_at,
-      status: row.status,
-      latencyMs: row.latency_ms,
-      errorMessage: row.error_message,
-    }),
-  );
-}
-
-async function insertIncident(monitorId: string, startedAt: string) {
-  await supabaseAdmin.from("monitor_incidents").insert({
-    monitor_id: monitorId,
-    started_at: startedAt,
-    created_at: startedAt,
-    updated_at: startedAt,
-  });
-}
-
-async function resolveIncident(monitorId: string, resolvedAt: string) {
-  const { data } = await supabaseAdmin
-    .from("monitor_incidents")
-    .select("id")
-    .eq("monitor_id", monitorId)
-    .is("resolved_at", null)
-    .order("started_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (data?.id) {
-    await supabaseAdmin.from("monitor_incidents").update({
-      resolved_at: resolvedAt,
-      updated_at: resolvedAt,
-    }).eq("id", data.id);
-  }
-}
-
-function shouldMarkDown(checkResult: "UP" | "DOWN", monitor: MonitorRow, recentChecks: { status: "UP" | "DOWN" }[]) {
-  if (checkResult === "UP") return false;
-  if (monitor.last_status === "DOWN") return true;
-
-  const threshold = Math.max(1, monitor.failure_threshold ?? 2);
-  if (threshold <= 1) return true;
-
-  const required = threshold - 1;
-  if (recentChecks.length < required) return false;
-
-  return recentChecks.slice(0, required).every((check) => check.status === "DOWN");
-}
 
 export async function runMonitorChecks(): Promise<RunMonitorsResult> {
   const report: CronReport = {
@@ -137,6 +35,8 @@ export async function runMonitorChecks(): Promise<RunMonitorsResult> {
     .from("monitors")
     .select("*")
     .eq("is_active", true)
+    // LAN monitors (agent_id != null) are checked by the LAN Agent, not the cloud cron.
+    .is("agent_id", null)
     .lte("next_check_at", new Date().toISOString())
     .order("next_check_at", { ascending: true });
 
@@ -145,8 +45,10 @@ export async function runMonitorChecks(): Promise<RunMonitorsResult> {
   }
 
   const monitors = (monitorsData ?? []) as unknown as MonitorRow[];
-  const settingsCache = new Map<string, NotificationSettingsRow>();
-  const emailCache = new Map<string, string>();
+  const caches = {
+    settingsCache: new Map<string, Database["public"]["Tables"]["notification_settings"]["Row"]>(),
+    emailCache: new Map<string, string>(),
+  };
 
   for (const monitor of monitors) {
     const now = new Date().toISOString();
@@ -160,100 +62,52 @@ export async function runMonitorChecks(): Promise<RunMonitorsResult> {
     const nextCheckAt = new Date(nextAtMs).toISOString();
 
     try {
-      const thresholdLimit = Math.max(0, (monitor.failure_threshold ?? 2) - 1);
-      const history =
-        thresholdLimit > 0
-          ? (await supabaseAdmin
-              .from("monitor_checks")
-              .select("status")
-              .eq("monitor_id", monitor.id)
-              .order("checked_at", { ascending: false })
-              .limit(thresholdLimit)).data ?? []
-          : [];
-      const historyRows = history as unknown as Array<{ status: "UP" | "DOWN" }>;
-
       const checkResult = await runTcpHealthCheck(monitor.ip_address, monitor.ports);
+      const derived = deriveMonitorState({ monitor, checkStatus: checkResult.status });
 
       await supabaseAdmin.from("monitor_checks").insert({
         monitor_id: monitor.id,
         checked_at: now,
-        status: checkResult.status,
+        status: derived.surfaceStatus,
         latency_ms: checkResult.latencyMs,
         error_message: checkResult.errorMessage,
+        source: "CLOUD",
+        agent_id: null,
+        check_method: checkResult.method,
       });
 
-      const shouldDown = shouldMarkDown(
-        checkResult.status,
-        monitor,
-        historyRows.map((row) => ({ status: row.status })),
-      );
-      const derivedStatus =
-        checkResult.status === "UP" ? "UP" : shouldDown ? "DOWN" : monitor.last_status ?? "UP";
-
       const previousEffectiveStatus = monitor.last_status ?? "UP";
+      const derivedStatus = derived.effectiveStatus;
       const stateChanged = derivedStatus !== previousEffectiveStatus;
 
       const monitorUpdates: Partial<MonitorRow> = {
         updated_at: now,
         last_checked_at: now,
         next_check_at: nextCheckAt,
+        last_latency_ms: checkResult.latencyMs,
+        last_error: checkResult.errorMessage,
+        failure_count: derived.failureCount,
+        success_count: derived.successCount,
+        status: derived.surfaceStatus,
       };
 
-      if (derivedStatus !== monitor.last_status) {
-        monitorUpdates.last_status = derivedStatus as MonitorRow["last_status"];
-      }
+      monitorUpdates.last_status = derivedStatus as MonitorRow["last_status"];
 
       await supabaseAdmin.from("monitors").update(monitorUpdates).eq("id", monitor.id);
 
       if (stateChanged) {
-        if (derivedStatus === "DOWN") {
-          await insertIncident(monitor.id, now);
-          report.incidentsCreated += 1;
-        } else if (derivedStatus === "UP") {
-          await resolveIncident(monitor.id, now);
-          report.incidentsResolved += 1;
-        }
-
-        const settings = await fetchUserSettings(monitor.user_id, settingsCache);
-        const destinationEmail =
-          settings?.alert_email ?? (await fetchUserEmail(monitor.user_id, emailCache));
-
-        if (destinationEmail) {
-          const recentChecks = await gatherRecentChecks(monitor.id);
-          const emailPayload =
-            derivedStatus === "DOWN"
-              ? buildDownEmail({
-                  nickname: monitor.nickname,
-                  ip: monitor.ip_address,
-                  dashboardUrl,
-                  occurredAt: now,
-                  checks: recentChecks,
-                })
-              : buildUpEmail({
-                  nickname: monitor.nickname,
-                  ip: monitor.ip_address,
-                  dashboardUrl,
-                  occurredAt: now,
-                  checks: recentChecks,
-                });
-
-          const shouldNotify =
-            (derivedStatus === "DOWN" && (settings?.notify_on_down ?? true)) ||
-            (derivedStatus === "UP" && (settings?.notify_on_up ?? true));
-
-          if (shouldNotify) {
-            try {
-              await sendMonitorEmail({
-                to: destinationEmail,
-                subject: emailPayload.subject,
-                html: emailPayload.html,
-              });
-              report.notificationsSent += 1;
-            } catch (sendError) {
-              report.errors.push(`email failed for ${monitor.id}: ${toErrorMessage(sendError)}`);
-            }
-          }
-        }
+        const alertReport = await notifyIfStateChanged({
+          monitor,
+          previousEffectiveStatus,
+          derivedStatus,
+          occurredAt: now,
+          dashboardUrl,
+          caches,
+        });
+        report.notificationsSent += alertReport.notificationsSent;
+        report.incidentsCreated += alertReport.incidentsCreated;
+        report.incidentsResolved += alertReport.incidentsResolved;
+        report.errors.push(...alertReport.errors);
       }
 
       report.checked += 1;
