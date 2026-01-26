@@ -4,5 +4,12 @@
       "path": "/api/cron/check-monitors",
       "schedule": "0 0 * * *"
     }
+  ],
+
+  "rewrites": [
+    {
+      "source": "/:path*",
+      "destination": "/index.html"
+    }
   ]
 }
