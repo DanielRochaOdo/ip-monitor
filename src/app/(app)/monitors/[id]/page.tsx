@@ -41,13 +41,14 @@ type CheckPayload = {
 };
 
 type PageProps = {
-  params: { id: string };
+  params: Promise<{ id: string }> | { id: string };
 };
 
 export default function MonitorDetailPage({ params }: PageProps) {
   const [monitor, setMonitor] = useState<MonitorPayload | null>(null);
   const [checks, setChecks] = useState<CheckPayload[]>([]);
   const [loading, setLoading] = useState(true);
+  const [monitorId, setMonitorId] = useState<string | null>(null);
   const session = useSession();
   const supabase = useSupabaseClient();
   const authReady = useAuthReady();
@@ -83,12 +84,27 @@ export default function MonitorDetailPage({ params }: PageProps) {
     if (!authReady || !session?.access_token) return;
 
     let cancelled = false;
+    Promise.resolve(params).then((resolved) => {
+      if (cancelled) return;
+      setMonitorId(resolved.id);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authReady, params, session?.access_token]);
+
+  useEffect(() => {
+    if (!authReady || !session?.access_token) return;
+    if (!monitorId) return;
+
+    let cancelled = false;
     setLoading(true);
 
     const load = async () => {
       const [monitorRes, checksRes] = await Promise.all([
-        fetch(`/api/monitors/${params.id}`, { headers: authHeaders, cache: "no-store" }),
-        fetch(`/api/reports/checks?monitorId=${params.id}&limit=50`, {
+        fetch(`/api/monitors/${monitorId}`, { headers: authHeaders, cache: "no-store" }),
+        fetch(`/api/reports/checks?monitorId=${monitorId}&limit=50`, {
           headers: authHeaders,
           cache: "no-store",
         }),
@@ -123,9 +139,9 @@ export default function MonitorDetailPage({ params }: PageProps) {
     return () => {
       cancelled = true;
     };
-  }, [authHeaders, authReady, params.id, router, session?.access_token, toast]);
+  }, [authHeaders, authReady, monitorId, router, session?.access_token, toast]);
 
-  if (loading || !monitor) {
+  if (loading || !monitorId || !monitor) {
     return <div className="text-sm text-slate-400">Carregando...</div>;
   }
 
