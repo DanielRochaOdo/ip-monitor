@@ -280,12 +280,13 @@ export default function DashboardPage() {
         <div className="space-y-3">
           <h2 className="text-xl font-semibold text-white">Monitores</h2>
           <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4 shadow-xl">
-            <div className="grid grid-cols-6 gap-2 px-3 py-2 text-xs font-semibold uppercase text-slate-400">
+            <div className="grid grid-cols-7 gap-2 px-3 py-2 text-xs font-semibold uppercase text-slate-400">
               <span className="col-span-2">Monitor</span>
               <span>Origem</span>
               <span>Tipo</span>
               <span>Intervalo</span>
               <span>Status</span>
+              <span className="text-right">Acoes</span>
             </div>
             <div className="divide-y divide-white/5">
               {monitors.length ? (
@@ -293,8 +294,12 @@ export default function DashboardPage() {
                   const surface = monitor.status ?? (monitor.last_status ?? "UP");
                   const origin = monitor.agent_id ? "LAN" : "CLOUD";
                   return (
-                    <div key={monitor.id} className="grid grid-cols-6 gap-2 px-3 py-3 text-sm text-slate-200">
-                      <span className="col-span-2 font-semibold">{monitor.nickname}</span>
+                    <div key={monitor.id} className="grid grid-cols-7 gap-2 px-3 py-3 text-sm text-slate-200">
+                      <span className="col-span-2 font-semibold">
+                        <Link href={`/monitors/${monitor.id}`} className="hover:underline">
+                          {monitor.nickname}
+                        </Link>
+                      </span>
                       <span className="text-xs uppercase tracking-[0.2em] text-slate-400">{origin}</span>
                       <span className="text-xs uppercase tracking-[0.2em] text-slate-400">{monitor.check_type}</span>
                       <span>{monitor.ping_interval_seconds}s</span>
@@ -310,6 +315,14 @@ export default function DashboardPage() {
                         >
                           {surface}
                         </span>
+                      </span>
+                      <span className="text-right">
+                        <Link
+                          href={`/monitors/${monitor.id}`}
+                          className="rounded-full border border-emerald-500/40 px-3 py-1 text-xs font-semibold text-emerald-200"
+                        >
+                          Editar
+                        </Link>
                       </span>
                     </div>
                   );
@@ -386,4 +399,3 @@ export default function DashboardPage() {
     </div>
   );
 }
-

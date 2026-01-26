@@ -474,7 +474,7 @@ export default function MonitorsPage() {
                       href={`/monitors/${monitor.id}`}
                       className="rounded-full border border-emerald-500/40 px-3 py-1 text-xs font-semibold text-emerald-200"
                     >
-                      Detalhes
+                      Editar
                     </Link>
                   </div>
                 </div>

@@ -98,7 +98,12 @@ export async function PATCH(request: Request, context: RouteContext) {
       }
     }
 
-    if (parsed.data.ping_interval_seconds !== undefined) {
+    if (
+      parsed.data.ping_interval_seconds !== undefined ||
+      parsed.data.check_type !== undefined ||
+      parsed.data.agent_id !== undefined ||
+      parsed.data.ip_address !== undefined
+    ) {
       updates.next_check_at = new Date().toISOString();
     }
 
