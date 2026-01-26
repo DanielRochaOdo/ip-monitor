@@ -1,7 +1,17 @@
 import { z } from "zod";
+import { validateRecipientEmails } from "@/lib/email/recipients";
 
 export const notificationSettingsSchema = z.object({
-  alert_email: z.string().email(),
+  alert_email: z
+    .string()
+    .transform((value, ctx) => {
+      const validated = validateRecipientEmails(value);
+      if (!validated.ok) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: validated.error });
+        return z.NEVER;
+      }
+      return validated.value;
+    }),
   notify_on_down: z.boolean(),
   notify_on_up: z.boolean(),
 });

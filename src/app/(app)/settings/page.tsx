@@ -198,14 +198,16 @@ export default function SettingsPage() {
         <h1 className="text-2xl font-semibold text-white">Notificacoes</h1>
         <form className="mt-6 grid gap-4 md:grid-cols-2" onSubmit={handleSubmit}>
           <div className="space-y-1 md:col-span-2">
-            <label className="text-xs uppercase tracking-[0.4em] text-slate-400">Email de alerta</label>
+            <label className="text-xs uppercase tracking-[0.4em] text-slate-400">Emails de alerta</label>
             <input
-              type="email"
+              type="text"
               value={form.alert_email}
               onChange={(event) => setForm((prev) => ({ ...prev, alert_email: event.target.value }))}
               className="w-full rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2 text-sm text-slate-200"
               disabled={loading}
+              placeholder="email1@dominio.com, email2@dominio.com"
             />
+            <p className="text-xs text-slate-500">Voce pode informar mais de um email, separado por virgula ou ponto e virgula.</p>
           </div>
           <label className="flex items-center gap-3 text-sm">
             <input
