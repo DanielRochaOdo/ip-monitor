@@ -41,6 +41,44 @@ export async function fetchJson<T>(
     }
     const text = await res.text();
     return { ok: res.ok, status, data: null, text };
+  } catch (error) {
+    // Node/undici throws AbortError on timeout. Return a stable shape so callers can surface
+    // a useful error message instead of crashing the cycle.
+    const name = error instanceof Error ? error.name : null;
+    const message = error instanceof Error ? error.message : String(error);
+    if (name === "AbortError" || message.toLowerCase().includes("aborted")) {
+      return { ok: false, status: 0, data: null, text: `timeout after ${timeoutMs}ms` };
+    }
+
+    if (error instanceof Error) {
+      const parts: string[] = [];
+      parts.push(`${error.name}: ${error.message}`);
+
+      const anyErr = error as unknown as {
+        code?: unknown;
+        cause?: unknown;
+      };
+
+      if (anyErr.code) {
+        parts.push(`code=${String(anyErr.code)}`);
+      }
+
+      if (anyErr.cause) {
+        if (anyErr.cause instanceof Error) {
+          parts.push(`cause=${anyErr.cause.name}: ${anyErr.cause.message}`);
+          const causeAny = anyErr.cause as unknown as { code?: unknown };
+          if (causeAny.code) {
+            parts.push(`cause_code=${String(causeAny.code)}`);
+          }
+        } else {
+          parts.push(`cause=${String(anyErr.cause)}`);
+        }
+      }
+
+      return { ok: false, status: 0, data: null, text: parts.join(" | ") };
+    }
+
+    return { ok: false, status: 0, data: null, text: message };
   } finally {
     clearTimeout(timeout);
   }
@@ -53,4 +91,3 @@ export function log(event: string, payload: Record<string, unknown> = {}) {
   // eslint-disable-next-line no-console
   console.log(line);
 }
-
