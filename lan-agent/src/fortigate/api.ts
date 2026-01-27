@@ -144,6 +144,7 @@ export async function collectFortiGateApiMetrics(
   device: FortiGateDeviceTask,
   opts: { timeoutMs?: number; tokenMode?: "query" | "header" } = {},
 ): Promise<FortiGateMetrics> {
+  const ref = device.api_token_secret_ref?.trim() ?? null;
   const token = getTokenForDevice(device);
   if (!token) {
     return {
@@ -161,7 +162,7 @@ export async function collectFortiGateApiMetrics(
       wan2Ip: null,
       lanStatus: null,
       lanIp: null,
-      error: "missing api token (api_token_secret_ref)",
+      error: `missing api token (${ref ?? "api_token_secret_ref"})`,
     };
   }
 
@@ -254,4 +255,3 @@ export async function collectFortiGateApiMetrics(
     error: degraded ? `partial api: perf=${perfRes.status} iface=${ifaceRes.status}` : null,
   };
 }
-
