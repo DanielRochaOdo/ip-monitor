@@ -1,7 +1,7 @@
 services:
   lan-agent:
     build: .
-    restart: unless-stopped
+    restart: always
     env_file:
       - .env
     # Required for ICMP ping in most Docker environments.
