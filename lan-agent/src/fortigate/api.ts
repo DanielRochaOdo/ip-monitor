@@ -73,13 +73,27 @@ function extractUptimeSeconds(statusJson: any): number | null {
 
 function extractPerf(perfJson: any): { cpu: number | null; mem: number | null; sessions: number | null } {
   const results = perfJson?.results ?? {};
-  const cpu = pickNumber(results?.cpu) ?? (Array.isArray(results?.cpu) ? pickNumber(results.cpu[0]) : null);
-  const mem = pickNumber(results?.mem) ?? pickNumber(results?.memory) ?? null;
+
+  // FortiOS 7.2 returns:
+  // results.cpu: { user, system, idle, ... }
+  // results.mem: { total, used, ... } (bytes)
+  const cpuIdle = pickNumber(results?.cpu?.idle);
+  const cpu = cpuIdle !== null ? Math.max(0, Math.min(100, Math.round(100 - cpuIdle))) : null;
+
+  const memTotal = pickNumber(results?.mem?.total);
+  const memUsed = pickNumber(results?.mem?.used);
+  const mem =
+    memTotal !== null && memUsed !== null && memTotal > 0
+      ? Math.max(0, Math.min(100, Math.round((memUsed / memTotal) * 100)))
+      : null;
+
+  // Some FortiOS builds expose sessions in other monitor endpoints; keep optional.
   const sessions = pickNumber(results?.sessions) ?? pickNumber(results?.session_count) ?? null;
   return { cpu, mem, sessions };
 }
 
 function normalizeInterfaceStatus(value: unknown): string | null {
+  if (typeof value === "boolean") return value ? "up" : "down";
   if (typeof value === "string") return value;
   if (typeof value === "number") return String(value);
   return null;
@@ -97,7 +111,14 @@ function extractInterfaces(
   lanIp: string | null;
 } {
   const list = (ifaceJson?.results ?? ifaceJson?.result ?? ifaceJson) as any;
-  const ifaces: any[] = Array.isArray(list) ? list : Array.isArray(list?.interfaces) ? list.interfaces : [];
+  // FortiOS 7.2 returns "results" as an object keyed by interface name.
+  const ifaces: any[] = Array.isArray(list)
+    ? list
+    : list && typeof list === "object"
+      ? Object.values(list)
+      : Array.isArray(list?.interfaces)
+        ? list.interfaces
+        : [];
 
   let wan1Status: string | null = null;
   let wan1Ip: string | null = null;
@@ -114,7 +135,8 @@ function extractInterfaces(
     const status = normalizeInterfaceStatus(iface?.link ?? iface?.status ?? iface?.state ?? null);
     const ipStr = typeof ip === "string" ? ip.split(" ")[0] : null;
 
-    if (name === "wan1") {
+    // FortiOS may use "wan" (not "wan1").
+    if (name === "wan" || name === "wan1") {
       wan1Status = status;
       wan1Ip = ipStr;
     } else if (name === "wan2") {
@@ -133,6 +155,34 @@ function extractInterfaces(
       } else if (!wan2Ip && wan1Ip !== ipStr) {
         wan2Ip = ipStr;
         wan2Status = status;
+      }
+    }
+  }
+
+  // Heuristic fallback for PPPoE-like interfaces (often short names like "a") when we couldn't match by name/IP.
+  if (!wan2Ip) {
+    const candidates = ifaces
+      .map((iface) => {
+        const name = String(iface?.name ?? iface?.interface ?? "").toLowerCase();
+        const ip = iface?.ip ?? iface?.ip_address ?? iface?.ipv4_address ?? null;
+        const ipStr = typeof ip === "string" ? ip.split(" ")[0] : null;
+        const status = normalizeInterfaceStatus(iface?.link ?? iface?.status ?? iface?.state ?? null);
+        const mask = pickNumber(iface?.mask);
+        const isLan = name.startsWith("lan");
+        const isCandidate =
+          !!ipStr &&
+          ipStr !== "0.0.0.0" &&
+          !isLan &&
+          (name.startsWith("wan") || mask === 32 || name.length <= 2);
+        return isCandidate ? { ip: ipStr, status } : null;
+      })
+      .filter((item): item is { ip: string; status: string | null } => !!item);
+
+    for (const candidate of candidates) {
+      if (candidate.ip !== wan1Ip) {
+        wan2Ip = candidate.ip;
+        wan2Status = candidate.status;
+        break;
       }
     }
   }
