@@ -41,6 +41,15 @@ export async function fetchJson<T>(
     }
     const text = await res.text();
     return { ok: res.ok, status, data: null, text };
+  } catch (error) {
+    // Node/undici throws AbortError on timeout. Return a stable shape so callers can surface
+    // a useful error message instead of crashing the cycle.
+    const name = error instanceof Error ? error.name : null;
+    const message = error instanceof Error ? error.message : String(error);
+    if (name === "AbortError" || message.toLowerCase().includes("aborted")) {
+      return { ok: false, status: 0, data: null, text: `timeout after ${timeoutMs}ms` };
+    }
+    return { ok: false, status: 0, data: null, text: message };
   } finally {
     clearTimeout(timeout);
   }
@@ -53,4 +62,3 @@ export function log(event: string, payload: Record<string, unknown> = {}) {
   // eslint-disable-next-line no-console
   console.log(line);
 }
-
