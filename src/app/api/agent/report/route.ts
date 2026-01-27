@@ -209,8 +209,24 @@ export async function POST(request: Request) {
         error: row.error ?? null,
       }));
 
+    let devicesInserted = 0;
     if (deviceRowsToInsert.length) {
-      await supabaseAdmin.from("device_metrics").insert(deviceRowsToInsert);
+      const { data: insertedRows, error: insertError } = await supabaseAdmin
+        .from("device_metrics")
+        .insert(deviceRowsToInsert)
+        .select("device_id");
+
+      if (insertError) {
+        return NextResponse.json(
+          {
+            error: "Falha ao salvar metricas do device",
+            details: insertError.message,
+          },
+          { status: 500 },
+        );
+      }
+
+      devicesInserted = Array.isArray(insertedRows) ? insertedRows.length : 0;
     }
 
     const notificationsSent = monitorResults.reduce(
@@ -223,6 +239,7 @@ export async function POST(request: Request) {
       monitorsProcessed: monitorResults.length,
       notificationsSent,
       devicesProcessed: deviceRowsToInsert.length,
+      devicesInserted,
       monitorResults,
     });
   } catch (error) {
@@ -231,4 +248,3 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: message }, { status });
   }
 }
-

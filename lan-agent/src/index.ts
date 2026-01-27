@@ -201,6 +201,8 @@ async function runCycle() {
   const appUrl = getEnv("APP_URL");
   const agentToken = getEnv("AGENT_TOKEN");
   const timeoutMs = getEnvInt("AGENT_TIMEOUT_MS", 2500);
+  // FortiGate API calls can be slower than basic TCP/ICMP checks.
+  const deviceTimeoutMs = getEnvInt("AGENT_DEVICE_TIMEOUT_MS", Math.max(timeoutMs, 8000));
   const concurrency = getEnvInt("AGENT_CONCURRENCY", 10);
   const dryRun = (process.env.AGENT_DRY_RUN ?? "").toLowerCase() === "true";
 
@@ -246,7 +248,7 @@ async function runCycle() {
   const deviceReports = await mapWithConcurrency(devices, Math.min(concurrency, 5), async (d) => {
     const key = `d:${d.id}`;
     try {
-      const r = await runDeviceCheck(d, timeoutMs);
+      const r = await runDeviceCheck(d, deviceTimeoutMs);
       recordResult(key, r.status !== "DOWN", nowMs);
       return r;
     } catch (e) {
