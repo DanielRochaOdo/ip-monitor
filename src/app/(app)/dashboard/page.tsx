@@ -263,8 +263,8 @@ export default function DashboardPage() {
                     <span>CPU: {latest?.cpu_percent ?? "--"}%</span>
                     <span>Mem: {latest?.mem_percent ?? "--"}%</span>
                     <span>Sessoes: {latest?.sessions ?? "--"}</span>
-                    <span>WAN1: {latest?.wan1_ip ?? "--"}</span>
-                    <span>WAN2: {latest?.wan2_ip ?? "--"}</span>
+                    <span>WAN1: {latest?.wan1_status ?? "--"}</span>
+                    <span>WAN2: {latest?.wan2_status ?? "--"}</span>
                     <span>Atualizado: {latest?.checked_at ? new Date(latest.checked_at).toLocaleTimeString() : "--"}</span>
                   </div>
                 </div>
