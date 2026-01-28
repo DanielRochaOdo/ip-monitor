@@ -36,10 +36,19 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: devicesError.message }, { status: 500 });
     }
 
+    const deviceIds = (devicesData ?? []).map((d) => (d as { id: string }).id).filter(Boolean);
+    const { data: backoffData } = deviceIds.length
+      ? await supabaseAdmin
+          .from("device_backoff")
+          .select("device_id, backoff_seconds, next_allowed_at, reason, updated_at")
+          .in("device_id", deviceIds)
+      : { data: [] as unknown[] };
+
     return NextResponse.json({
       agent,
       monitors: monitorsData ?? [],
       devices: devicesData ?? [],
+      device_backoff: backoffData ?? [],
       now: nowIso,
     });
   } catch (error) {
@@ -48,4 +57,3 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: message }, { status });
   }
 }
-

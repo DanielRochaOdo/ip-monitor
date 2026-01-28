@@ -2,6 +2,14 @@ import { NextResponse } from "next/server";
 import { getServerSupabaseClient } from "@/lib/supabase/route";
 import { UnauthorizedError } from "@/lib/errors";
 
+type DeviceBackoffRow = {
+  device_id: string;
+  backoff_seconds: number;
+  next_allowed_at: string | null;
+  reason: string | null;
+  updated_at: string;
+};
+
 export async function GET(request: Request) {
   try {
     const { supabase } = await getServerSupabaseClient(request);
@@ -12,6 +20,19 @@ export async function GET(request: Request) {
       .order("site", { ascending: true });
 
     if (error) throw error;
+
+    const deviceIds = (devices ?? []).map((d) => (d as { id: string }).id).filter(Boolean);
+    const { data: backoffRows } = deviceIds.length
+      ? await supabase
+          .from("device_backoff")
+          .select("device_id, backoff_seconds, next_allowed_at, reason, updated_at")
+          .in("device_id", deviceIds)
+      : { data: [] as unknown[] };
+
+    const backoffByDevice = new Map<string, DeviceBackoffRow>();
+    for (const row of (backoffRows ?? []) as unknown as DeviceBackoffRow[]) {
+      if (row?.device_id) backoffByDevice.set(row.device_id, row);
+    }
 
     const result = [];
     for (const device of devices ?? []) {
@@ -25,7 +46,7 @@ export async function GET(request: Request) {
         .limit(1)
         .maybeSingle();
 
-      result.push({ device, latest: metric ?? null });
+      result.push({ device, latest: metric ?? null, backoff: backoffByDevice.get(device.id) ?? null });
     }
 
     return NextResponse.json({ devices: result });
@@ -36,4 +57,3 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Unable to load devices" }, { status: 500 });
   }
 }
-

@@ -39,6 +39,13 @@ type AgentDeviceMetricReport = {
   error?: string | null;
 };
 
+type AgentDeviceBackoffReport = {
+  device_id: string;
+  backoff_seconds: number;
+  next_allowed_at: string | null;
+  reason?: string | null;
+};
+
 function toIso(value?: string) {
   if (!value) return new Date().toISOString();
   const date = new Date(value);
@@ -84,6 +91,7 @@ export async function POST(request: Request) {
     const payload = (await request.json()) as {
       monitors?: AgentMonitorReport[];
       device_metrics?: AgentDeviceMetricReport[];
+      device_backoff?: AgentDeviceBackoffReport[];
     };
 
     const dashboardUrl = new URL("/dashboard", getAppUrl()).toString();
@@ -171,6 +179,7 @@ export async function POST(request: Request) {
     });
 
     const deviceReports = Array.isArray(payload?.device_metrics) ? payload.device_metrics : [];
+    const deviceBackoffReports = Array.isArray(payload?.device_backoff) ? payload.device_backoff : [];
     const deviceIds = Array.from(new Set(deviceReports.map((item) => item.device_id).filter(Boolean)));
 
     const { data: deviceRows, error: devicesError } = deviceIds.length
@@ -229,6 +238,22 @@ export async function POST(request: Request) {
       devicesInserted = Array.isArray(insertedRows) ? insertedRows.length : 0;
     }
 
+    // Upsert backoff state (optional) so the agent can resume smoothly after restarts.
+    const backoffRowsToUpsert = deviceBackoffReports
+      .filter((row) => deviceAllowed.has(row.device_id))
+      .map((row) => ({
+        device_id: row.device_id,
+        agent_id: agent.id,
+        backoff_seconds: row.backoff_seconds,
+        next_allowed_at: row.next_allowed_at,
+        reason: row.reason ?? null,
+        updated_at: new Date().toISOString(),
+      }));
+
+    if (backoffRowsToUpsert.length) {
+      await supabaseAdmin.from("device_backoff").upsert(backoffRowsToUpsert, { onConflict: "device_id" });
+    }
+
     const notificationsSent = monitorResults.reduce(
       (acc, item) => acc + (item.ok ? (item.alerts?.notificationsSent ?? 0) : 0),
       0,
@@ -240,6 +265,7 @@ export async function POST(request: Request) {
       notificationsSent,
       devicesProcessed: deviceRowsToInsert.length,
       devicesInserted,
+      devicesBackoffUpdated: backoffRowsToUpsert.length,
       monitorResults,
     });
   } catch (error) {
