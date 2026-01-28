@@ -64,6 +64,11 @@ type DevicesPayload = {
       wan2_status: string | null;
       error: string | null;
     } | null;
+    run_request: {
+      id: string;
+      device_id: string;
+      requested_at: string;
+    } | null;
     backoff: {
       device_id: string;
       backoff_seconds: number;
@@ -79,6 +84,7 @@ export default function DashboardPage() {
   const [monitors, setMonitors] = useState<MonitorPayload[]>([]);
   const [checks, setChecks] = useState<CheckPayload[]>([]);
   const [devices, setDevices] = useState<DevicesPayload["devices"]>([]);
+  const [deviceRunNowPendingId, setDeviceRunNowPendingId] = useState<string | null>(null);
 
   const session = useSession();
   const supabase = useSupabaseClient();
@@ -137,6 +143,54 @@ export default function DashboardPage() {
       setDevices(data?.devices ?? []);
     }
   }, [authHeaders, authReady, session?.access_token]);
+
+  const lastDeviceChecked = useMemo(() => {
+    let best: { site: string; at: string } | null = null;
+    for (const row of devices) {
+      const at = row.latest?.checked_at ?? null;
+      if (!at) continue;
+      if (!best) {
+        best = { site: row.device.site, at };
+        continue;
+      }
+      if (new Date(at).getTime() > new Date(best.at).getTime()) {
+        best = { site: row.device.site, at };
+      }
+    }
+    return best;
+  }, [devices]);
+
+  const requestDeviceRunNow = useCallback(
+    async (deviceId: string) => {
+      if (!session?.access_token) return;
+      setDeviceRunNowPendingId(deviceId);
+      try {
+        const res = await fetch(`/api/devices/${encodeURIComponent(deviceId)}/run`, {
+          method: "POST",
+          headers: authHeaders,
+        });
+        const payload = (await res.json()) as { ok?: boolean; queued?: boolean; alreadyQueued?: boolean; error?: string };
+        if (!res.ok) {
+          throw new Error(payload?.error ?? "Falha ao solicitar verificacao");
+        }
+        toast.push({
+          title: payload?.alreadyQueued ? "Verificacao manual ja estava na fila." : "Verificacao manual solicitada.",
+          variant: "success",
+        });
+        // Refresh quickly so the UI shows "em fila" immediately.
+        setTimeout(() => void refresh(), 500);
+      } catch (e) {
+        toast.push({
+          title: "Falha ao solicitar verificacao",
+          description: e instanceof Error ? e.message : "Erro desconhecido",
+          variant: "error",
+        });
+      } finally {
+        setDeviceRunNowPendingId(null);
+      }
+    },
+    [authHeaders, refresh, session?.access_token, toast],
+  );
 
   useEffect(() => {
     void refresh();
@@ -240,9 +294,22 @@ export default function DashboardPage() {
           </Link>
         </div>
         <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4 shadow-xl">
+          <div className="mb-4 flex flex-col gap-1 text-xs text-slate-400 sm:flex-row sm:items-center sm:justify-between">
+            <p>Automatico: round-robin (1 device por vez) para evitar 429.</p>
+            <p>
+              Ultimo check:{" "}
+              {lastDeviceChecked
+                ? `${lastDeviceChecked.site} as ${new Date(lastDeviceChecked.at).toLocaleTimeString()}`
+                : "--"}
+            </p>
+          </div>
+          <p className="mb-4 text-xs text-slate-500">
+            Dica: se aparecer 429 rate limit, aumente{" "}
+            <code className="text-slate-300">AGENT_DEVICE_STEP_SECONDS</code> no LAN Agent (ex.: 300 = 5 min).
+          </p>
           {devices.length ? (
             <div className="divide-y divide-white/5">
-              {devices.map(({ device, latest, backoff }) => (
+              {devices.map(({ device, latest, backoff, run_request }) => (
                 <div key={device.id} className="flex flex-col gap-2 py-3 text-sm">
                   {/** backoff info */}
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -253,19 +320,36 @@ export default function DashboardPage() {
                       <p className="text-xs text-slate-400">
                         LAN: {device.lan_ip ?? "--"} | WAN(s): {(device.wan_public_ips ?? []).join(", ") || "--"}
                       </p>
+                      {run_request?.requested_at ? (
+                        <p className="text-xs text-slate-500">
+                          Verificacao manual em fila desde{" "}
+                          {new Date(run_request.requested_at).toLocaleTimeString()}.
+                        </p>
+                      ) : null}
                       {latest?.error ? <p className="text-xs text-slate-500">Erro: {latest.error}</p> : null}
                     </div>
-                    <span
-                      className={`h-fit rounded-full px-3 py-1 text-xs font-semibold ${
-                        latest?.status === "DOWN"
-                          ? "bg-rose-500/20 text-rose-300"
-                          : latest?.status === "DEGRADED"
-                            ? "bg-amber-500/20 text-amber-200"
-                            : "bg-emerald-500/20 text-emerald-300"
-                      }`}
-                    >
-                      {latest?.status ?? "--"}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void requestDeviceRunNow(device.id)}
+                        disabled={!!run_request || deviceRunNowPendingId === device.id}
+                        className="rounded-lg border border-white/10 bg-slate-900/60 px-3 py-1 text-xs font-semibold text-slate-200 hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
+                        title={run_request ? "Ja existe uma verificacao manual pendente para este device." : "Solicitar verificacao agora"}
+                      >
+                        {run_request ? "Em fila" : deviceRunNowPendingId === device.id ? "Solicitando..." : "Monitorar agora"}
+                      </button>
+                      <span
+                        className={`h-fit rounded-full px-3 py-1 text-xs font-semibold ${
+                          latest?.status === "DOWN"
+                            ? "bg-rose-500/20 text-rose-300"
+                            : latest?.status === "DEGRADED"
+                              ? "bg-amber-500/20 text-amber-200"
+                              : "bg-emerald-500/20 text-emerald-300"
+                        }`}
+                      >
+                        {latest?.status ?? "--"}
+                      </span>
+                    </div>
                   </div>
                   <div className="grid grid-cols-2 gap-2 text-xs text-slate-300 sm:grid-cols-6">
                     <span>CPU: {latest?.cpu_percent ?? "--"}%</span>

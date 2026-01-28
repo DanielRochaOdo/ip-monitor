@@ -50,6 +50,11 @@ export type AgentPullResponse = {
     reason: string | null;
     updated_at: string;
   }>;
+  device_run_requests?: Array<{
+    id: string;
+    device_id: string;
+    requested_at: string;
+  }>;
 };
 
 export type AgentMonitorReport = {
@@ -86,4 +91,8 @@ export type AgentDeviceBackoffReport = {
   backoff_seconds: number;
   next_allowed_at: string | null;
   reason?: string | null;
+};
+
+export type AgentDeviceRunRequestConsumedReport = {
+  id: string;
 };

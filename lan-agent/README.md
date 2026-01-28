@@ -38,6 +38,12 @@ Defaults recomendados (estaveis para poucos devices):
 
 Se voce ver `DEGRADED` com erro 429, aumente `AGENT_DEVICE_STEP_SECONDS` (ex.: 60 -> 120) e/ou `AGENT_DEVICE_INTERFACE_INTERVAL_SECONDS` (ex.: 600 -> 1200).
 
+## Verificacao manual ("Monitorar agora")
+
+No dashboard, cada FortiGate tem um botao **Monitorar agora**. Isso cria uma solicitacao no banco e o LAN Agent prioriza esse device na proxima rodada.
+
+Requisito: aplicar a migration `supabase/migrations/005_device_run_requests.sql` no Supabase.
+
 ## Rodar local
 
 ```bash

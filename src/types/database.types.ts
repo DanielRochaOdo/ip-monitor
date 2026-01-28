@@ -373,6 +373,48 @@ export type Database = {
           },
         ];
       };
+      device_run_requests: {
+        Row: {
+          id: string;
+          device_id: string;
+          requested_by: string;
+          requested_at: string;
+          consumed_at: string | null;
+          consumed_by: string | null;
+        };
+        Insert: {
+          id?: string;
+          device_id: string;
+          requested_by: string;
+          requested_at?: string;
+          consumed_at?: string | null;
+          consumed_by?: string | null;
+        };
+        Update: {
+          id?: string;
+          device_id?: string;
+          requested_by?: string;
+          requested_at?: string;
+          consumed_at?: string | null;
+          consumed_by?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "device_run_requests_device_id_fkey";
+            columns: ["device_id"];
+            isOneToOne: false;
+            referencedRelation: "network_devices";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "device_run_requests_consumed_by_fkey";
+            columns: ["consumed_by"];
+            isOneToOne: false;
+            referencedRelation: "agents";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       monitor_incidents: {
         Row: {
           id: string;
