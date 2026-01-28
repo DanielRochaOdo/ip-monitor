@@ -28,6 +28,7 @@ const deviceSchedule = new Map<
     nextAllowedAtMs: number;
     reason: string | null;
     lastStatusAtMs: number;
+    lastIfaceAtMs: number;
     // Cache last successful metrics so we don't wipe the dashboard when we hit 429.
     lastGood: Partial<AgentDeviceMetricReport> | null;
   }
@@ -130,7 +131,7 @@ async function runMonitorCheck(task: AgentPullResponse["monitors"][number], time
 async function runDeviceCheck(
   task: AgentPullResponse["devices"][number],
   timeoutMs: number,
-  opts: { includeStatus?: boolean } = {},
+  opts: { includeStatus?: boolean; includeInterfaces?: boolean } = {},
 ): Promise<AgentDeviceMetricReport> {
   const checkedAt = new Date().toISOString();
 
@@ -146,7 +147,11 @@ async function runDeviceCheck(
         api_base_url: task.api_base_url,
         api_token_secret_ref: task.api_token_secret_ref,
       },
-      { timeoutMs, includeStatus: opts.includeStatus ?? false },
+      {
+        timeoutMs,
+        includeStatus: opts.includeStatus ?? false,
+        includeInterfaces: opts.includeInterfaces ?? true,
+      },
     );
 
     return {
@@ -255,22 +260,24 @@ async function main() {
 
   // Poll monitors separately (60s) so monitor intervals in DB are respected.
   const monitorPollSeconds = getEnvInt("AGENT_MONITOR_POLL_SECONDS", 60);
-  // Device metrics interval defaults to 5 minutes to avoid API rate-limit bursts.
-  const deviceIntervalSeconds = getEnvInt(
-    "AGENT_DEVICE_INTERVAL_SECONDS",
-    getEnvInt("AGENT_INTERVAL_SECONDS", 300),
-  );
+  // Devices: avoid bursts by checking ONE device per step (default 60s).
+  // Each device ends up being checked roughly every (step * number_of_devices).
+  const deviceStepSeconds = getEnvInt("AGENT_DEVICE_STEP_SECONDS", 60);
+  // How often to call the interfaces endpoint per device (default 10 min).
+  const deviceInterfaceIntervalSeconds = getEnvInt("AGENT_DEVICE_INTERFACE_INTERVAL_SECONDS", 600);
 
   const timeoutMs = getEnvInt("AGENT_TIMEOUT_MS", 2500);
   const deviceTimeoutMs = getEnvInt("AGENT_DEVICE_TIMEOUT_MS", Math.max(timeoutMs, 8000));
   const deviceStatusIntervalSeconds = getEnvInt("AGENT_DEVICE_STATUS_INTERVAL_SECONDS", 86400);
 
   const monitorConcurrency = getEnvInt("AGENT_CONCURRENCY", 2);
+  // Kept for compatibility; this scheduler runs at most 1 device per step to avoid bursts.
   const deviceConcurrency = getEnvInt("AGENT_DEVICE_CONCURRENCY", 1);
 
   log("agent_start", {
     monitor_poll_seconds: monitorPollSeconds,
-    device_interval_seconds: deviceIntervalSeconds,
+    device_step_seconds: deviceStepSeconds,
+    device_interface_interval_seconds: deviceInterfaceIntervalSeconds,
     monitor_concurrency: monitorConcurrency,
     device_concurrency: deviceConcurrency,
     device_status_interval_seconds: deviceStatusIntervalSeconds,
@@ -278,6 +285,9 @@ async function main() {
 
   let lastPullAtMs = 0;
   let devices: AgentPullResponse["devices"] = [];
+  let deviceOrder: string[] = [];
+  let deviceCursor = 0;
+  let nextDeviceStepAtMs = 0;
 
   for (;;) {
     const nowMs = Date.now();
@@ -301,6 +311,18 @@ async function main() {
       } else {
         devices = pull.data.devices ?? [];
 
+        // Stable order so we don't burst on restarts: sort by site/name then round-robin.
+        deviceOrder = devices
+          .slice()
+          .sort((a, b) => {
+            const sa = `${a.site ?? ""} ${a.hostname ?? ""} ${a.id}`;
+            const sb = `${b.site ?? ""} ${b.hostname ?? ""} ${b.id}`;
+            return sa.localeCompare(sb);
+          })
+          .map((d) => d.id);
+        if (deviceOrder.length && deviceCursor >= deviceOrder.length) deviceCursor = 0;
+        if (!nextDeviceStepAtMs) nextDeviceStepAtMs = nowMs + jitterMs(1000);
+
         // Merge persisted backoff state.
         const backoffRows = pull.data.device_backoff ?? [];
         for (const row of backoffRows) {
@@ -313,12 +335,13 @@ async function main() {
             nextAllowedAtMs: Number.isFinite(nextAllowedAtMs) ? nextAllowedAtMs : 0,
             reason: row.reason ?? null,
             lastStatusAtMs: existing?.lastStatusAtMs ?? 0,
+            lastIfaceAtMs: existing?.lastIfaceAtMs ?? 0,
             lastGood: existing?.lastGood ?? null,
           });
         }
 
-        // Seed schedules for newly discovered devices (spread across the interval).
-        const spreadMs = Math.max(1, Math.floor((deviceIntervalSeconds * 1000) / Math.max(1, devices.length)));
+        // Seed schedules for newly discovered devices (spread across steps).
+        const spreadMs = Math.max(1, deviceStepSeconds * 1000);
         devices.forEach((d, idx) => {
           if (deviceSchedule.has(d.id)) return;
           deviceSchedule.set(d.id, {
@@ -327,6 +350,7 @@ async function main() {
             nextAllowedAtMs: 0,
             reason: null,
             lastStatusAtMs: 0,
+            lastIfaceAtMs: 0,
             lastGood: null,
           });
         });
@@ -357,119 +381,127 @@ async function main() {
       }
     }
 
-    // Process devices that are due; keep device concurrency low and add per-device jitter.
-    const dueDevices = devices
-      .map((d) => ({ d, s: deviceSchedule.get(d.id) }))
-      .filter(({ s }) => !!s)
-      .filter(({ d, s }) => !shouldSkip(`d:${d.id}`, nowMs) && nowMs >= (s!.nextRunAtMs ?? 0))
-      .filter(({ s }) => !s!.nextAllowedAtMs || nowMs >= s!.nextAllowedAtMs)
-      .sort((a, b) => (a.s!.nextRunAtMs ?? 0) - (b.s!.nextRunAtMs ?? 0))
-      .slice(0, Math.max(1, deviceConcurrency))
-      .map(({ d }) => d);
+    // Devices: run ONE device per step to avoid bursts (round-robin).
+    if (deviceOrder.length && nowMs >= nextDeviceStepAtMs) {
+      nextDeviceStepAtMs = nowMs + deviceStepSeconds * 1000;
 
-    if (dueDevices.length) {
+      // Intentionally clamp to 1 to guarantee "one device per minute" behavior.
+      // (If you ever want more, raise AGENT_DEVICE_STEP_SECONDS instead of concurrency.)
+      const runsThisStep = Math.min(1, Math.max(1, deviceConcurrency));
+
+      // eslint-disable-next-line no-plusplus
+      for (let run = 0; run < runsThisStep; run++) {
+      const pickedId = deviceOrder[deviceCursor % deviceOrder.length];
+      deviceCursor = (deviceCursor + 1) % deviceOrder.length;
+
+      const device = devices.find((d) => d.id === pickedId);
+      if (!device) {
+        await sleep(1000);
+        continue;
+      }
+
+      const state = deviceSchedule.get(device.id)!;
+
+      // Respect circuit-breaker and per-device backoff windows.
+      const skipCircuit = shouldSkip(`d:${device.id}`, nowMs);
+      const skipBackoff = !!state.nextAllowedAtMs && nowMs < state.nextAllowedAtMs;
+      if (skipCircuit || skipBackoff) {
+        log("device_skipped", { device_id: device.id, site: device.site, reason: skipBackoff ? "backoff" : "circuit" });
+        await sleep(1000);
+        continue;
+      }
+
+      await sleep(jitterMs(3000));
+
       const deviceReports: AgentDeviceMetricReport[] = [];
       const backoffUpdates: AgentDeviceBackoffReport[] = [];
 
-      for (const device of dueDevices) {
-        const state = deviceSchedule.get(device.id)!;
-        await sleep(jitterMs(3000));
+      const key = `d:${device.id}`;
+      try {
+        const includeStatus = nowMs - state.lastStatusAtMs >= deviceStatusIntervalSeconds * 1000;
+        const includeInterfaces = nowMs - state.lastIfaceAtMs >= deviceInterfaceIntervalSeconds * 1000;
+        const r = await runDeviceCheck(device, deviceTimeoutMs, { includeStatus, includeInterfaces });
+        recordResult(key, r.status !== "DOWN", nowMs);
 
-        const key = `d:${device.id}`;
-        try {
-          const includeStatus = nowMs - state.lastStatusAtMs >= deviceStatusIntervalSeconds * 1000;
-          const r = await runDeviceCheck(device, deviceTimeoutMs, { includeStatus });
-          recordResult(key, r.status !== "DOWN", nowMs);
+        if (includeStatus) state.lastStatusAtMs = nowMs;
+        if (includeInterfaces) state.lastIfaceAtMs = nowMs;
 
-          // If we attempted the static "status" call, don't keep hammering it on failures.
-          if (includeStatus) {
-            state.lastStatusAtMs = nowMs;
-          }
+        const is429 =
+          r.status === "DEGRADED" &&
+          typeof r.error === "string" &&
+          r.error.startsWith("rate limited by FortiGate (429)");
 
-          // Detect FortiGate rate-limit in a stable way.
-          const is429 =
-            r.status === "DEGRADED" &&
-            typeof r.error === "string" &&
-            r.error.startsWith("rate limited by FortiGate (429)");
-          if (is429) {
-            // Keep last good values in the row so the UI stays useful during backoff.
-            const merged: AgentDeviceMetricReport = {
-              ...r,
-              uptime_seconds: state.lastGood?.uptime_seconds ?? r.uptime_seconds ?? null,
-              cpu_percent: state.lastGood?.cpu_percent ?? r.cpu_percent ?? null,
-              mem_percent: state.lastGood?.mem_percent ?? r.mem_percent ?? null,
-              sessions: state.lastGood?.sessions ?? r.sessions ?? null,
-              wan1_status: state.lastGood?.wan1_status ?? r.wan1_status ?? null,
-              wan2_status: state.lastGood?.wan2_status ?? r.wan2_status ?? null,
-              lan_status: state.lastGood?.lan_status ?? r.lan_status ?? null,
-              wan1_ip: state.lastGood?.wan1_ip ?? r.wan1_ip ?? null,
-              wan2_ip: state.lastGood?.wan2_ip ?? r.wan2_ip ?? null,
-              lan_ip: state.lastGood?.lan_ip ?? r.lan_ip ?? null,
-            };
-            deviceReports.push(merged);
+        if (is429) {
+          // Keep last good values in the row so the UI stays useful during backoff.
+          const merged: AgentDeviceMetricReport = {
+            ...r,
+            uptime_seconds: state.lastGood?.uptime_seconds ?? r.uptime_seconds ?? null,
+            cpu_percent: state.lastGood?.cpu_percent ?? r.cpu_percent ?? null,
+            mem_percent: state.lastGood?.mem_percent ?? r.mem_percent ?? null,
+            sessions: state.lastGood?.sessions ?? r.sessions ?? null,
+            wan1_status: state.lastGood?.wan1_status ?? r.wan1_status ?? null,
+            wan2_status: state.lastGood?.wan2_status ?? r.wan2_status ?? null,
+            lan_status: state.lastGood?.lan_status ?? r.lan_status ?? null,
+            wan1_ip: state.lastGood?.wan1_ip ?? r.wan1_ip ?? null,
+            wan2_ip: state.lastGood?.wan2_ip ?? r.wan2_ip ?? null,
+            lan_ip: state.lastGood?.lan_ip ?? r.lan_ip ?? null,
+          };
+          deviceReports.push(merged);
 
-            const nextBackoff = Math.min(state.backoffSeconds ? state.backoffSeconds * 2 : 60, 300);
-            const nextAllowedAtMs = nowMs + nextBackoff * 1000;
-            state.backoffSeconds = nextBackoff;
-            state.nextAllowedAtMs = nextAllowedAtMs;
-            state.reason = "429";
-            state.nextRunAtMs = nextAllowedAtMs + jitterMs(3000);
-            backoffUpdates.push({
-              device_id: device.id,
-              backoff_seconds: nextBackoff,
-              next_allowed_at: new Date(nextAllowedAtMs).toISOString(),
-              reason: "429 rate limit",
-            });
-            log("device_backoff", { device_id: device.id, site: device.site, backoff_seconds: nextBackoff });
-          } else {
-            deviceReports.push(r);
-
-            // Cache last successful metric payload for resilience.
-            if (r.status !== "DOWN") {
-              state.lastGood = {
-                uptime_seconds: r.uptime_seconds ?? null,
-                cpu_percent: r.cpu_percent ?? null,
-                mem_percent: r.mem_percent ?? null,
-                sessions: r.sessions ?? null,
-                wan1_status: r.wan1_status ?? null,
-                wan2_status: r.wan2_status ?? null,
-                lan_status: r.lan_status ?? null,
-                wan1_ip: r.wan1_ip ?? null,
-                wan2_ip: r.wan2_ip ?? null,
-                lan_ip: r.lan_ip ?? null,
-              };
-            }
-
-            // Clear backoff on successful/non-429 attempts.
-            if (state.backoffSeconds || state.nextAllowedAtMs) {
-              state.backoffSeconds = 0;
-              state.nextAllowedAtMs = 0;
-              state.reason = null;
-              backoffUpdates.push({
-                device_id: device.id,
-                backoff_seconds: 0,
-                next_allowed_at: null,
-                reason: null,
-              });
-            }
-            state.nextRunAtMs = nowMs + deviceIntervalSeconds * 1000 + jitterMs(3000);
-          }
-        } catch (e) {
-          recordResult(key, false, nowMs);
-          deviceReports.push({
+          const nextBackoff = Math.min(state.backoffSeconds ? state.backoffSeconds * 2 : 60, 300);
+          const nextAllowedAtMs = nowMs + nextBackoff * 1000;
+          state.backoffSeconds = nextBackoff;
+          state.nextAllowedAtMs = nextAllowedAtMs;
+          state.reason = "429";
+          state.nextRunAtMs = nextAllowedAtMs + jitterMs(3000);
+          backoffUpdates.push({
             device_id: device.id,
-            checked_at: new Date().toISOString(),
-            reachable: false,
-            status: "DOWN",
-            error: e instanceof Error ? e.message : String(e),
+            backoff_seconds: nextBackoff,
+            next_allowed_at: new Date(nextAllowedAtMs).toISOString(),
+            reason: "429 rate limit",
           });
-          state.nextRunAtMs = nowMs + deviceIntervalSeconds * 1000 + jitterMs(3000);
-        }
+          log("device_backoff", { device_id: device.id, site: device.site, backoff_seconds: nextBackoff });
+        } else {
+          deviceReports.push(r);
 
-        deviceSchedule.set(device.id, state);
+          if (r.status !== "DOWN") {
+            state.lastGood = {
+              uptime_seconds: r.uptime_seconds ?? null,
+              cpu_percent: r.cpu_percent ?? null,
+              mem_percent: r.mem_percent ?? null,
+              sessions: r.sessions ?? null,
+              wan1_status: r.wan1_status ?? null,
+              wan2_status: r.wan2_status ?? null,
+              lan_status: r.lan_status ?? null,
+              wan1_ip: r.wan1_ip ?? null,
+              wan2_ip: r.wan2_ip ?? null,
+              lan_ip: r.lan_ip ?? null,
+            };
+          }
+
+          if (state.backoffSeconds || state.nextAllowedAtMs) {
+            state.backoffSeconds = 0;
+            state.nextAllowedAtMs = 0;
+            state.reason = null;
+            backoffUpdates.push({ device_id: device.id, backoff_seconds: 0, next_allowed_at: null, reason: null });
+          }
+          state.nextRunAtMs = nowMs + deviceStepSeconds * 1000 * Math.max(1, deviceOrder.length) + jitterMs(3000);
+        }
+      } catch (e) {
+        recordResult(key, false, nowMs);
+        deviceReports.push({
+          device_id: device.id,
+          checked_at: new Date().toISOString(),
+          reachable: false,
+          status: "DOWN",
+          error: e instanceof Error ? e.message : String(e),
+        });
+        state.nextRunAtMs = nowMs + deviceStepSeconds * 1000 * Math.max(1, deviceOrder.length) + jitterMs(3000);
       }
 
+      deviceSchedule.set(device.id, state);
       await sendReport({ device_metrics: deviceReports, device_backoff: backoffUpdates });
+      }
     }
 
     await sleep(1000);
