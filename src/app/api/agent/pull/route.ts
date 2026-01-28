@@ -54,10 +54,18 @@ export async function POST(request: Request) {
           .limit(50)
       : { data: [] as unknown[] };
 
+    // Normalize a few string fields to avoid subtle whitespace bugs in the agent.
+    const normalizedDevices = (devicesData ?? []).map((d) => {
+      const row = d as unknown as { api_token_secret_ref?: string | null; api_base_url?: string | null };
+      const api_token_secret_ref = row.api_token_secret_ref?.trim() || null;
+      const api_base_url = row.api_base_url?.trim() || null;
+      return { ...d, api_token_secret_ref, api_base_url };
+    });
+
     return NextResponse.json({
       agent,
       monitors: monitorsData ?? [],
-      devices: devicesData ?? [],
+      devices: normalizedDevices,
       device_backoff: backoffData ?? [],
       device_run_requests: runRequestsData ?? [],
       now: nowIso,

@@ -264,9 +264,12 @@ async function main() {
   const monitorPollSeconds = getEnvInt("AGENT_MONITOR_POLL_SECONDS", 60);
   // Devices: avoid bursts by checking ONE device per step (default 60s).
   // Each device ends up being checked roughly every (step * number_of_devices).
-  const deviceStepSeconds = getEnvInt("AGENT_DEVICE_STEP_SECONDS", 60);
-  // How often to call the interfaces endpoint per device (default 10 min).
-  const deviceInterfaceIntervalSeconds = getEnvInt("AGENT_DEVICE_INTERFACE_INTERVAL_SECONDS", 600);
+  // Default is conservative (5 min per step) to avoid FortiGate 429. Use the "Monitorar agora"
+  // button in the dashboard for immediate checks when needed.
+  const deviceStepSeconds = getEnvInt("AGENT_DEVICE_STEP_SECONDS", 300);
+  // How often to call the interfaces endpoint per device (default 15 min).
+  const deviceInterfaceIntervalSeconds = getEnvInt("AGENT_DEVICE_INTERFACE_INTERVAL_SECONDS", 900);
+  const deviceBackoffCapSeconds = getEnvInt("AGENT_DEVICE_BACKOFF_CAP_SECONDS", 900);
 
   const timeoutMs = getEnvInt("AGENT_TIMEOUT_MS", 2500);
   const deviceTimeoutMs = getEnvInt("AGENT_DEVICE_TIMEOUT_MS", Math.max(timeoutMs, 8000));
@@ -283,6 +286,7 @@ async function main() {
     monitor_concurrency: monitorConcurrency,
     device_concurrency: deviceConcurrency,
     device_status_interval_seconds: deviceStatusIntervalSeconds,
+    device_backoff_cap_seconds: deviceBackoffCapSeconds,
   });
 
   let lastPullAtMs = 0;
@@ -390,6 +394,11 @@ async function main() {
       }
     }
 
+    // If the user clicked "Monitorar agora", don't wait for the next step window.
+    if (pendingDeviceRunRequests.length && nowMs < nextDeviceStepAtMs) {
+      nextDeviceStepAtMs = nowMs;
+    }
+
     // Devices: run ONE device per step to avoid bursts (round-robin).
     if (deviceOrder.length && nowMs >= nextDeviceStepAtMs) {
       nextDeviceStepAtMs = nowMs + deviceStepSeconds * 1000;
@@ -443,6 +452,13 @@ async function main() {
             site: device.site,
             reason: skipBackoff ? "backoff" : "circuit",
           });
+
+          // If this was a manual request, consume it so it doesn't sit in the queue.
+          if (selectedRequestId) {
+            await sendReport({ device_run_requests_consumed: [{ id: selectedRequestId }] });
+            pendingDeviceRunRequests = pendingDeviceRunRequests.filter((rr) => rr.id !== selectedRequestId);
+          }
+
           await sleep(1000);
           continue;
         }
@@ -459,9 +475,6 @@ async function main() {
           const includeInterfaces = nowMs - state.lastIfaceAtMs >= deviceInterfaceIntervalSeconds * 1000;
           const r = await runDeviceCheck(device, deviceTimeoutMs, { includeStatus, includeInterfaces });
           recordResult(key, r.status !== "DOWN", nowMs);
-
-          if (includeStatus) state.lastStatusAtMs = nowMs;
-          if (includeInterfaces) state.lastIfaceAtMs = nowMs;
 
           const is429 =
             r.status === "DEGRADED" &&
@@ -485,7 +498,7 @@ async function main() {
             };
             deviceReports.push(merged);
 
-            const nextBackoff = Math.min(state.backoffSeconds ? state.backoffSeconds * 2 : 60, 300);
+            const nextBackoff = Math.min(state.backoffSeconds ? state.backoffSeconds * 2 : 60, deviceBackoffCapSeconds);
             const nextAllowedAtMs = nowMs + nextBackoff * 1000;
             state.backoffSeconds = nextBackoff;
             state.nextAllowedAtMs = nextAllowedAtMs;
@@ -499,20 +512,42 @@ async function main() {
             });
             log("device_backoff", { device_id: device.id, site: device.site, backoff_seconds: nextBackoff });
           } else {
-            deviceReports.push(r);
+            // When we intentionally skip interface calls, keep the last known WAN/LAN values
+            // so WAN1/WAN2 don't "disappear" from the dashboard.
+            const effective: AgentDeviceMetricReport = {
+              ...r,
+              wan1_status: r.wan1_status ?? state.lastGood?.wan1_status ?? null,
+              wan2_status: r.wan2_status ?? state.lastGood?.wan2_status ?? null,
+              lan_status: r.lan_status ?? state.lastGood?.lan_status ?? null,
+              wan1_ip: r.wan1_ip ?? state.lastGood?.wan1_ip ?? null,
+              wan2_ip: r.wan2_ip ?? state.lastGood?.wan2_ip ?? null,
+              lan_ip: r.lan_ip ?? state.lastGood?.lan_ip ?? null,
+            };
+            deviceReports.push(effective);
 
-            if (r.status !== "DOWN") {
+            // Only advance status/interface refresh timestamps when we actually got data.
+            if (includeStatus && (r.uptime_seconds ?? null) !== null) state.lastStatusAtMs = nowMs;
+            if (
+              includeInterfaces &&
+              ((effective.wan1_status ?? null) !== null ||
+                (effective.wan2_status ?? null) !== null ||
+                (effective.lan_status ?? null) !== null)
+            ) {
+              state.lastIfaceAtMs = nowMs;
+            }
+
+            if (effective.status !== "DOWN") {
               state.lastGood = {
-                uptime_seconds: r.uptime_seconds ?? null,
-                cpu_percent: r.cpu_percent ?? null,
-                mem_percent: r.mem_percent ?? null,
-                sessions: r.sessions ?? null,
-                wan1_status: r.wan1_status ?? null,
-                wan2_status: r.wan2_status ?? null,
-                lan_status: r.lan_status ?? null,
-                wan1_ip: r.wan1_ip ?? null,
-                wan2_ip: r.wan2_ip ?? null,
-                lan_ip: r.lan_ip ?? null,
+                uptime_seconds: effective.uptime_seconds ?? null,
+                cpu_percent: effective.cpu_percent ?? null,
+                mem_percent: effective.mem_percent ?? null,
+                sessions: effective.sessions ?? null,
+                wan1_status: effective.wan1_status ?? null,
+                wan2_status: effective.wan2_status ?? null,
+                lan_status: effective.lan_status ?? null,
+                wan1_ip: effective.wan1_ip ?? null,
+                wan2_ip: effective.wan2_ip ?? null,
+                lan_ip: effective.lan_ip ?? null,
               };
             }
 

@@ -203,6 +203,11 @@ export async function collectFortiGateApiMetrics(
   const ref = device.api_token_secret_ref?.trim() ?? null;
   const token = getTokenForDevice(device);
   if (!token) {
+    log("fgt_token_missing", {
+      device_id: device.id,
+      site: device.site,
+      api_token_secret_ref: ref ?? null,
+    });
     return {
       reachable: false,
       status: "DOWN",

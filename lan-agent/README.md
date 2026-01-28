@@ -25,18 +25,18 @@ Este agente roda dentro da sua rede (LAN) e executa checks que nao funcionam na 
 ## Intervalos (monitores x devices)
 
 - **Monitores (UP/DOWN)**: o agente faz pull a cada `AGENT_MONITOR_POLL_SECONDS` (padrao 60s) para respeitar os intervalos definidos em cada monitor.
-- **FortiGate (metricas)**: para evitar rajadas e 429, o agente roda **round-robin** (um device por vez) a cada `AGENT_DEVICE_STEP_SECONDS` (padrao 60s). Com 4 devices, cada device e checado em ~4 minutos.
-  - O endpoint de **interfaces** (WAN/LAN up/down) roda com cache por device a cada `AGENT_DEVICE_INTERFACE_INTERVAL_SECONDS` (padrao 600s / 10 min).
+- **FortiGate (metricas)**: para evitar rajadas e 429, o agente roda **round-robin** (um device por vez) a cada `AGENT_DEVICE_STEP_SECONDS` (padrao 300s / 5 min).
+  - O endpoint de **interfaces** (WAN/LAN up/down) roda com cache por device a cada `AGENT_DEVICE_INTERFACE_INTERVAL_SECONDS` (padrao 900s / 15 min).
   - O endpoint de **status** (hostname/firmware/uptime) roda com cache por device a cada `AGENT_DEVICE_STATUS_INTERVAL_SECONDS` (padrao 86400s / 24h).
 
 Defaults recomendados (estaveis para poucos devices):
 
 - `AGENT_CONCURRENCY=2` (monitores)
 - `AGENT_DEVICE_CONCURRENCY=1` (compat; o scheduler roda 1 por step)
-- `AGENT_DEVICE_STEP_SECONDS=60` (1 device/min)
-- `AGENT_DEVICE_INTERFACE_INTERVAL_SECONDS=600` (10 min)
+- `AGENT_DEVICE_STEP_SECONDS=300` (1 device / 5 min)
+- `AGENT_DEVICE_INTERFACE_INTERVAL_SECONDS=900` (15 min)
 
-Se voce ver `DEGRADED` com erro 429, aumente `AGENT_DEVICE_STEP_SECONDS` (ex.: 60 -> 120) e/ou `AGENT_DEVICE_INTERFACE_INTERVAL_SECONDS` (ex.: 600 -> 1200).
+Se voce ver `DEGRADED` com erro 429, aumente `AGENT_DEVICE_STEP_SECONDS` (ex.: 300 -> 600) e/ou `AGENT_DEVICE_INTERFACE_INTERVAL_SECONDS` (ex.: 900 -> 1800).
 
 ## Verificacao manual ("Monitorar agora")
 
