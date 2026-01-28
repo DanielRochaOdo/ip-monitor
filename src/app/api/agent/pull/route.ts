@@ -44,11 +44,22 @@ export async function POST(request: Request) {
           .in("device_id", deviceIds)
       : { data: [] as unknown[] };
 
+    const { data: runRequestsData } = deviceIds.length
+      ? await supabaseAdmin
+          .from("device_run_requests")
+          .select("id, device_id, requested_at")
+          .in("device_id", deviceIds)
+          .is("consumed_at", null)
+          .order("requested_at", { ascending: true })
+          .limit(50)
+      : { data: [] as unknown[] };
+
     return NextResponse.json({
       agent,
       monitors: monitorsData ?? [],
       devices: devicesData ?? [],
       device_backoff: backoffData ?? [],
+      device_run_requests: runRequestsData ?? [],
       now: nowIso,
     });
   } catch (error) {

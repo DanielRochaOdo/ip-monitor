@@ -46,6 +46,10 @@ type AgentDeviceBackoffReport = {
   reason?: string | null;
 };
 
+type AgentDeviceRunRequestConsumedReport = {
+  id: string;
+};
+
 function toIso(value?: string) {
   if (!value) return new Date().toISOString();
   const date = new Date(value);
@@ -92,6 +96,7 @@ export async function POST(request: Request) {
       monitors?: AgentMonitorReport[];
       device_metrics?: AgentDeviceMetricReport[];
       device_backoff?: AgentDeviceBackoffReport[];
+      device_run_requests_consumed?: AgentDeviceRunRequestConsumedReport[];
     };
 
     const dashboardUrl = new URL("/dashboard", getAppUrl()).toString();
@@ -180,6 +185,9 @@ export async function POST(request: Request) {
 
     const deviceReports = Array.isArray(payload?.device_metrics) ? payload.device_metrics : [];
     const deviceBackoffReports = Array.isArray(payload?.device_backoff) ? payload.device_backoff : [];
+    const consumedRunRequests = Array.isArray(payload?.device_run_requests_consumed)
+      ? payload.device_run_requests_consumed
+      : [];
     const deviceIds = Array.from(new Set(deviceReports.map((item) => item.device_id).filter(Boolean)));
 
     const { data: deviceRows, error: devicesError } = deviceIds.length
@@ -254,6 +262,21 @@ export async function POST(request: Request) {
       await supabaseAdmin.from("device_backoff").upsert(backoffRowsToUpsert, { onConflict: "device_id" });
     }
 
+    // Mark run-now requests as consumed so the dashboard doesn't keep showing them as pending.
+    const consumedIds = Array.from(
+      new Set(
+        consumedRunRequests
+          .map((r) => (r as { id?: string }).id)
+          .filter((id): id is string => typeof id === "string" && id.length > 10),
+      ),
+    );
+    if (consumedIds.length) {
+      await supabaseAdmin
+        .from("device_run_requests")
+        .update({ consumed_at: new Date().toISOString(), consumed_by: agent.id })
+        .in("id", consumedIds);
+    }
+
     const notificationsSent = monitorResults.reduce(
       (acc, item) => acc + (item.ok ? (item.alerts?.notificationsSent ?? 0) : 0),
       0,
@@ -266,6 +289,7 @@ export async function POST(request: Request) {
       devicesProcessed: deviceRowsToInsert.length,
       devicesInserted,
       devicesBackoffUpdated: backoffRowsToUpsert.length,
+      deviceRunRequestsConsumed: consumedIds.length,
       monitorResults,
     });
   } catch (error) {
