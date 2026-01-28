@@ -196,8 +196,7 @@ export async function collectFortiGateApiMetrics(
   opts: {
     timeoutMs?: number;
     tokenMode?: "query" | "header";
-    includeStatus?: boolean;
-    includeInterfaces?: boolean;
+    mode?: "perf" | "iface" | "status";
   } = {},
 ): Promise<FortiGateMetrics> {
   const ref = device.api_token_secret_ref?.trim() ?? null;
@@ -252,8 +251,7 @@ export async function collectFortiGateApiMetrics(
 
   const timeoutMs = opts.timeoutMs ?? 2500;
   const tokenMode = opts.tokenMode ?? ((process.env.FORTIGATE_TOKEN_MODE as "query" | "header" | undefined) ?? "query");
-  const includeStatus = opts.includeStatus ?? false;
-  const includeInterfaces = opts.includeInterfaces ?? true;
+  const mode = opts.mode ?? "perf";
 
   const headers: Record<string, string> = {};
   if (tokenMode === "header") {
@@ -263,16 +261,18 @@ export async function collectFortiGateApiMetrics(
   const perfUrl = withAccessToken(`${base}/api/v2/monitor/system/performance/status`, token, tokenMode);
   const ifaceUrl = withAccessToken(`${base}/api/v2/monitor/system/interface`, token, tokenMode);
   const statusUrl = withAccessToken(`${base}/api/v2/monitor/system/status`, token, tokenMode);
-  const statusRes = includeStatus ? await fetchJson<any>(statusUrl, { headers, timeoutMs }) : null;
 
-  const hostname = statusRes?.ok && statusRes.data ? extractHostname(statusRes.data) ?? device.hostname ?? null : device.hostname ?? null;
+  // IMPORTANT: to avoid FortiGate 429 bursts, we intentionally call ONLY ONE endpoint per run.
+  // The scheduler decides which mode to run (perf/iface/status) and we rely on lastGood caching
+  // to keep the dashboard useful in-between refreshes.
+  const statusRes = mode === "status" ? await fetchJson<any>(statusUrl, { headers, timeoutMs }) : null;
+  const perfRes = mode === "perf" ? await fetchJson<any>(perfUrl, { headers, timeoutMs }) : null;
+  const ifaceRes = mode === "iface" ? await fetchJson<any>(ifaceUrl, { headers, timeoutMs }) : null;
+
+  const hostname =
+    statusRes?.ok && statusRes.data ? extractHostname(statusRes.data) ?? device.hostname ?? null : device.hostname ?? null;
   const firmwareVersion = statusRes?.ok && statusRes.data ? extractFirmware(statusRes.data) : null;
   const uptimeSeconds = statusRes?.ok && statusRes.data ? extractUptimeSeconds(statusRes.data) : null;
-
-  const perfRes = await fetchJson<any>(perfUrl, { headers, timeoutMs });
-  const ifaceRes = includeInterfaces
-    ? await fetchJson<any>(ifaceUrl, { headers, timeoutMs })
-    : { ok: true, status: 204, data: null, text: null, duration_ms: 0 };
 
   // Basic observability: log non-2xx responses per endpoint with latency.
   const truncate = (value: unknown) => {
@@ -293,11 +293,11 @@ export async function collectFortiGateApiMetrics(
   };
 
   if (statusRes) maybeLog("status", statusRes);
-  maybeLog("perf", perfRes);
-  if (includeInterfaces) maybeLog("iface", ifaceRes);
+  if (perfRes) maybeLog("perf", perfRes);
+  if (ifaceRes) maybeLog("iface", ifaceRes);
 
   // Rate-limit: treat as reachable but degraded.
-  if (statusRes?.status === 429 || perfRes.status === 429 || (includeInterfaces && ifaceRes.status === 429)) {
+  if (statusRes?.status === 429 || perfRes?.status === 429 || ifaceRes?.status === 429) {
     return {
       reachable: true,
       status: "DEGRADED",
@@ -321,9 +321,8 @@ export async function collectFortiGateApiMetrics(
   // Unauthorized/forbidden: reachable but misconfigured.
   const anyAuthError =
     (statusRes && (statusRes.status === 401 || statusRes.status === 403)) ||
-    perfRes.status === 401 ||
-    perfRes.status === 403 ||
-    (includeInterfaces && (ifaceRes.status === 401 || ifaceRes.status === 403));
+    (perfRes && (perfRes.status === 401 || perfRes.status === 403)) ||
+    (ifaceRes && (ifaceRes.status === 401 || ifaceRes.status === 403));
 
   if (anyAuthError) {
     return {
@@ -345,19 +344,20 @@ export async function collectFortiGateApiMetrics(
     };
   }
 
-  const perf = perfRes.ok && perfRes.data ? extractPerf(perfRes.data) : { cpu: null, mem: null, sessions: null };
+  const perf =
+    perfRes && perfRes.ok && perfRes.data ? extractPerf(perfRes.data) : { cpu: null, mem: null, sessions: null };
   const iface =
-    includeInterfaces && ifaceRes.ok && ifaceRes.data
+    ifaceRes && ifaceRes.ok && ifaceRes.data
       ? extractInterfaces(ifaceRes.data, device.wan_public_ips ?? [])
       : { wan1Status: null, wan1Ip: null, wan2Status: null, wan2Ip: null, lanStatus: null, lanIp: null };
 
-  const anyOk = perfRes.ok || ifaceRes.ok || (statusRes?.ok ?? false);
+  const anyOk = (perfRes?.ok ?? false) || (ifaceRes?.ok ?? false) || (statusRes?.ok ?? false);
   if (!anyOk) {
     const status =
       statusRes?.text ??
-      perfRes.text ??
-      ifaceRes.text ??
-      `api failed (perf=${perfRes.status} iface=${ifaceRes.status}${statusRes ? ` status=${statusRes.status}` : ""})`;
+      perfRes?.text ??
+      ifaceRes?.text ??
+      `api failed (mode=${mode} status=${statusRes?.status ?? "-"} perf=${perfRes?.status ?? "-"} iface=${ifaceRes?.status ?? "-"})`;
     return {
       reachable: false,
       status: "DOWN",
@@ -377,9 +377,8 @@ export async function collectFortiGateApiMetrics(
     };
   }
 
-  // If interfaces were intentionally skipped, don't mark the device as degraded because of that.
-  const degraded =
-    !perfRes.ok || (includeInterfaces && !ifaceRes.ok) || (includeStatus && !(statusRes?.ok ?? true));
+  // With "single endpoint per run", consider it degraded only if the chosen endpoint failed.
+  const degraded = mode === "perf" ? !(perfRes?.ok ?? false) : mode === "iface" ? !(ifaceRes?.ok ?? false) : !(statusRes?.ok ?? false);
 
   return {
     reachable: true,
@@ -393,11 +392,9 @@ export async function collectFortiGateApiMetrics(
       wan1Status: iface.wan1Status,
       wan1Ip: iface.wan1Ip,
       wan2Status: iface.wan2Status,
-      wan2Ip: iface.wan2Ip,
-      lanStatus: iface.lanStatus,
-      lanIp: iface.lanIp,
-      error: degraded
-        ? `partial api: perf=${perfRes.status}${includeInterfaces ? ` iface=${ifaceRes.status}` : ""}`
-        : null,
-    };
+    wan2Ip: iface.wan2Ip,
+    lanStatus: iface.lanStatus,
+    lanIp: iface.lanIp,
+    error: degraded ? `partial api: mode=${mode}` : null,
+  };
 }

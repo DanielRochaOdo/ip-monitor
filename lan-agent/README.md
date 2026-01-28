@@ -25,9 +25,11 @@ Este agente roda dentro da sua rede (LAN) e executa checks que nao funcionam na 
 ## Intervalos (monitores x devices)
 
 - **Monitores (UP/DOWN)**: o agente faz pull a cada `AGENT_MONITOR_POLL_SECONDS` (padrao 60s) para respeitar os intervalos definidos em cada monitor.
-- **FortiGate (metricas)**: para evitar rajadas e 429, o agente roda **round-robin** (um device por vez) a cada `AGENT_DEVICE_STEP_SECONDS` (padrao 300s / 5 min).
-  - O endpoint de **interfaces** (WAN/LAN up/down) roda com cache por device a cada `AGENT_DEVICE_INTERFACE_INTERVAL_SECONDS` (padrao 900s / 15 min).
-  - O endpoint de **status** (hostname/firmware/uptime) roda com cache por device a cada `AGENT_DEVICE_STATUS_INTERVAL_SECONDS` (padrao 86400s / 24h).
+- **FortiGate (metricas)**: para evitar rajadas e 429, o agente roda **round-robin** (um device por vez) a cada `AGENT_DEVICE_STEP_SECONDS`.
+  - Importante: o agente faz **apenas 1 chamada HTTP por device por rodada** (perf **OU** iface **OU** status). Isso elimina bursts de 2-3 endpoints por check.
+  - **perf** (cpu/mem): roda por padrao a cada `AGENT_DEVICE_STEP_SECONDS`.
+  - **iface** (WAN/LAN up/down): roda com cache por device a cada `AGENT_DEVICE_INTERFACE_INTERVAL_SECONDS`.
+  - **status** (hostname/firmware/uptime): roda com cache por device a cada `AGENT_DEVICE_STATUS_INTERVAL_SECONDS`.
 
 Defaults recomendados (estaveis para poucos devices):
 

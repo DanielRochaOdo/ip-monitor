@@ -30,6 +30,7 @@ const deviceSchedule = new Map<
     reason: string | null;
     lastStatusAtMs: number;
     lastIfaceAtMs: number;
+    lastPerfAtMs: number;
     // Cache last successful metrics so we don't wipe the dashboard when we hit 429.
     lastGood: Partial<AgentDeviceMetricReport> | null;
   }
@@ -132,7 +133,7 @@ async function runMonitorCheck(task: AgentPullResponse["monitors"][number], time
 async function runDeviceCheck(
   task: AgentPullResponse["devices"][number],
   timeoutMs: number,
-  opts: { includeStatus?: boolean; includeInterfaces?: boolean } = {},
+  opts: { mode?: "perf" | "iface" | "status" } = {},
 ): Promise<AgentDeviceMetricReport> {
   const checkedAt = new Date().toISOString();
 
@@ -150,8 +151,7 @@ async function runDeviceCheck(
       },
       {
         timeoutMs,
-        includeStatus: opts.includeStatus ?? false,
-        includeInterfaces: opts.includeInterfaces ?? true,
+        mode: opts.mode ?? "perf",
       },
     );
 
@@ -349,6 +349,7 @@ async function main() {
             reason: row.reason ?? null,
             lastStatusAtMs: existing?.lastStatusAtMs ?? 0,
             lastIfaceAtMs: existing?.lastIfaceAtMs ?? 0,
+            lastPerfAtMs: existing?.lastPerfAtMs ?? 0,
             lastGood: existing?.lastGood ?? null,
           });
         }
@@ -364,6 +365,7 @@ async function main() {
             reason: null,
             lastStatusAtMs: 0,
             lastIfaceAtMs: 0,
+            lastPerfAtMs: 0,
             lastGood: null,
           });
         });
@@ -471,9 +473,26 @@ async function main() {
 
         const key = `d:${device.id}`;
         try {
-          const includeStatus = nowMs - state.lastStatusAtMs >= deviceStatusIntervalSeconds * 1000;
-          const includeInterfaces = nowMs - state.lastIfaceAtMs >= deviceInterfaceIntervalSeconds * 1000;
-          const r = await runDeviceCheck(device, deviceTimeoutMs, { includeStatus, includeInterfaces });
+          // Single endpoint per run:
+          // - If manual run requested: prioritize WAN/LAN interfaces (this fixes "WAN missing" quickly).
+          // - Else: refresh interfaces when stale, otherwise refresh perf (cpu/mem).
+          // - Status is very infrequent (24h) and takes over a single run when due.
+          const statusDue = nowMs - state.lastStatusAtMs >= deviceStatusIntervalSeconds * 1000;
+          const ifaceDue = nowMs - state.lastIfaceAtMs >= deviceInterfaceIntervalSeconds * 1000;
+          const perfDue = nowMs - state.lastPerfAtMs >= deviceStepSeconds * 1000;
+
+          let mode: "perf" | "iface" | "status" = "perf";
+          if (selectedRequestId) {
+            mode = "iface";
+          } else if (statusDue) {
+            mode = "status";
+          } else if (ifaceDue) {
+            mode = "iface";
+          } else if (perfDue) {
+            mode = "perf";
+          }
+
+          const r = await runDeviceCheck(device, deviceTimeoutMs, { mode });
           recordResult(key, r.status !== "DOWN", nowMs);
 
           const is429 =
@@ -525,15 +544,18 @@ async function main() {
             };
             deviceReports.push(effective);
 
-            // Only advance status/interface refresh timestamps when we actually got data.
-            if (includeStatus && (r.uptime_seconds ?? null) !== null) state.lastStatusAtMs = nowMs;
+            // Only advance timestamps for the endpoint we actually called (and got data).
+            if (mode === "status" && (r.uptime_seconds ?? null) !== null) state.lastStatusAtMs = nowMs;
             if (
-              includeInterfaces &&
+              mode === "iface" &&
               ((effective.wan1_status ?? null) !== null ||
                 (effective.wan2_status ?? null) !== null ||
                 (effective.lan_status ?? null) !== null)
             ) {
               state.lastIfaceAtMs = nowMs;
+            }
+            if (mode === "perf" && ((effective.cpu_percent ?? null) !== null || (effective.mem_percent ?? null) !== null)) {
+              state.lastPerfAtMs = nowMs;
             }
 
             if (effective.status !== "DOWN") {
