@@ -43,6 +43,13 @@ export type AgentPullResponse = {
     snmp_target: string | null;
     snmp_community: string | null;
   }>;
+  device_backoff?: Array<{
+    device_id: string;
+    backoff_seconds: number;
+    next_allowed_at: string | null;
+    reason: string | null;
+    updated_at: string;
+  }>;
 };
 
 export type AgentMonitorReport = {
@@ -74,3 +81,9 @@ export type AgentDeviceMetricReport = {
   error?: string | null;
 };
 
+export type AgentDeviceBackoffReport = {
+  device_id: string;
+  backoff_seconds: number;
+  next_allowed_at: string | null;
+  reason?: string | null;
+};

@@ -2,7 +2,12 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import { getEnv, getEnvInt, jitterMs, log, sleep, fetchJson } from "./util.js";
-import type { AgentPullResponse, AgentMonitorReport, AgentDeviceMetricReport } from "./types.js";
+import type {
+  AgentPullResponse,
+  AgentMonitorReport,
+  AgentDeviceMetricReport,
+  AgentDeviceBackoffReport,
+} from "./types.js";
 import { icmpPing } from "./checks/icmp.js";
 import { tcpCheck } from "./checks/tcp.js";
 import { httpCheck } from "./checks/http.js";
@@ -15,6 +20,18 @@ type CircuitState = {
 };
 
 const circuitByKey = new Map<string, CircuitState>();
+const deviceSchedule = new Map<
+  string,
+  {
+    nextRunAtMs: number;
+    backoffSeconds: number;
+    nextAllowedAtMs: number;
+    reason: string | null;
+    lastStatusAtMs: number;
+    // Cache last successful metrics so we don't wipe the dashboard when we hit 429.
+    lastGood: Partial<AgentDeviceMetricReport> | null;
+  }
+>();
 
 function shouldSkip(key: string, nowMs: number) {
   const state = circuitByKey.get(key);
@@ -110,7 +127,11 @@ async function runMonitorCheck(task: AgentPullResponse["monitors"][number], time
   };
 }
 
-async function runDeviceCheck(task: AgentPullResponse["devices"][number], timeoutMs: number): Promise<AgentDeviceMetricReport> {
+async function runDeviceCheck(
+  task: AgentPullResponse["devices"][number],
+  timeoutMs: number,
+  opts: { includeStatus?: boolean } = {},
+): Promise<AgentDeviceMetricReport> {
   const checkedAt = new Date().toISOString();
 
   if (task.mgmt_method === "API") {
@@ -125,7 +146,7 @@ async function runDeviceCheck(task: AgentPullResponse["devices"][number], timeou
         api_base_url: task.api_base_url,
         api_token_secret_ref: task.api_token_secret_ref,
       },
-      { timeoutMs },
+      { timeoutMs, includeStatus: opts.includeStatus ?? false },
     );
 
     return {
@@ -197,74 +218,18 @@ async function runDeviceCheck(task: AgentPullResponse["devices"][number], timeou
   };
 }
 
-async function runCycle() {
+async function sendReport(payload: {
+  monitors?: AgentMonitorReport[];
+  device_metrics?: AgentDeviceMetricReport[];
+  device_backoff?: AgentDeviceBackoffReport[];
+}) {
   const appUrl = getEnv("APP_URL");
   const agentToken = getEnv("AGENT_TOKEN");
   const timeoutMs = getEnvInt("AGENT_TIMEOUT_MS", 2500);
-  // FortiGate API calls can be slower than basic TCP/ICMP checks.
-  const deviceTimeoutMs = getEnvInt("AGENT_DEVICE_TIMEOUT_MS", Math.max(timeoutMs, 8000));
-  const concurrency = getEnvInt("AGENT_CONCURRENCY", 10);
   const dryRun = (process.env.AGENT_DRY_RUN ?? "").toLowerCase() === "true";
 
-  const pull = await fetchJson<AgentPullResponse>(`${appUrl.replace(/\/$/, "")}/api/agent/pull`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-agent-token": agentToken,
-    },
-    body: JSON.stringify({}),
-    timeoutMs: Math.max(5000, timeoutMs * 2),
-  });
-
-  if (!pull.ok || !pull.data) {
-    log("pull_failed", { status: pull.status, text: pull.text });
-    return;
-  }
-
-  const nowMs = Date.now();
-
-  const monitors = (pull.data.monitors ?? []).filter((m) => !shouldSkip(`m:${m.id}`, nowMs));
-  const devices = (pull.data.devices ?? []).filter((d) => !shouldSkip(`d:${d.id}`, nowMs));
-
-  const monitorReports = await mapWithConcurrency(monitors, concurrency, async (m) => {
-    const key = `m:${m.id}`;
-    try {
-      const r = await runMonitorCheck(m, timeoutMs);
-      recordResult(key, r.status !== "DOWN", nowMs);
-      return r;
-    } catch (e) {
-      recordResult(key, false, nowMs);
-      return {
-        id: m.id,
-        checked_at: new Date().toISOString(),
-        status: "DOWN" as const,
-        latency_ms: null,
-        error_message: e instanceof Error ? e.message : String(e),
-        check_method: "TCP" as const,
-      };
-    }
-  });
-
-  const deviceReports = await mapWithConcurrency(devices, Math.min(concurrency, 5), async (d) => {
-    const key = `d:${d.id}`;
-    try {
-      const r = await runDeviceCheck(d, deviceTimeoutMs);
-      recordResult(key, r.status !== "DOWN", nowMs);
-      return r;
-    } catch (e) {
-      recordResult(key, false, nowMs);
-      return {
-        device_id: d.id,
-        checked_at: new Date().toISOString(),
-        reachable: false,
-        status: "DOWN" as const,
-        error: e instanceof Error ? e.message : String(e),
-      };
-    }
-  });
-
   if (dryRun) {
-    log("dry_run", { monitors: monitorReports.length, devices: deviceReports.length });
+    log("dry_run", { monitors: payload.monitors?.length ?? 0, devices: payload.device_metrics?.length ?? 0 });
     return;
   }
 
@@ -274,7 +239,7 @@ async function runCycle() {
       "content-type": "application/json",
       "x-agent-token": agentToken,
     },
-    body: JSON.stringify({ monitors: monitorReports, device_metrics: deviceReports }),
+    body: JSON.stringify(payload),
     timeoutMs: Math.max(7000, timeoutMs * 4),
   });
 
@@ -282,31 +247,232 @@ async function runCycle() {
     log("report_failed", { status: report.status, text: report.text });
     return;
   }
-
-  log("cycle_ok", {
-    monitors_pulled: pull.data.monitors?.length ?? 0,
-    devices_pulled: pull.data.devices?.length ?? 0,
-    monitors_reported: monitorReports.length,
-    devices_reported: deviceReports.length,
-    notifications_sent: report.data?.notificationsSent ?? 0,
-  });
 }
 
 async function main() {
-  const intervalSeconds = getEnvInt("AGENT_INTERVAL_SECONDS", 60);
-  log("agent_start", { interval_seconds: intervalSeconds });
+  const appUrl = getEnv("APP_URL").replace(/\/$/, "");
+  const agentToken = getEnv("AGENT_TOKEN");
+
+  // Poll monitors separately (60s) so monitor intervals in DB are respected.
+  const monitorPollSeconds = getEnvInt("AGENT_MONITOR_POLL_SECONDS", 60);
+  // Device metrics interval defaults to 5 minutes to avoid API rate-limit bursts.
+  const deviceIntervalSeconds = getEnvInt(
+    "AGENT_DEVICE_INTERVAL_SECONDS",
+    getEnvInt("AGENT_INTERVAL_SECONDS", 300),
+  );
+
+  const timeoutMs = getEnvInt("AGENT_TIMEOUT_MS", 2500);
+  const deviceTimeoutMs = getEnvInt("AGENT_DEVICE_TIMEOUT_MS", Math.max(timeoutMs, 8000));
+  const deviceStatusIntervalSeconds = getEnvInt("AGENT_DEVICE_STATUS_INTERVAL_SECONDS", 86400);
+
+  const monitorConcurrency = getEnvInt("AGENT_CONCURRENCY", 2);
+  const deviceConcurrency = getEnvInt("AGENT_DEVICE_CONCURRENCY", 1);
+
+  log("agent_start", {
+    monitor_poll_seconds: monitorPollSeconds,
+    device_interval_seconds: deviceIntervalSeconds,
+    monitor_concurrency: monitorConcurrency,
+    device_concurrency: deviceConcurrency,
+    device_status_interval_seconds: deviceStatusIntervalSeconds,
+  });
+
+  let lastPullAtMs = 0;
+  let devices: AgentPullResponse["devices"] = [];
 
   for (;;) {
-    const start = Date.now();
-    await sleep(jitterMs(5000));
-    try {
-      await runCycle();
-    } catch (e) {
-      log("cycle_error", { error: e instanceof Error ? e.message : String(e) });
+    const nowMs = Date.now();
+
+    // Pull due monitors and refresh device list/backoff periodically.
+    if (nowMs - lastPullAtMs >= monitorPollSeconds * 1000) {
+      lastPullAtMs = nowMs;
+
+      const pull = await fetchJson<AgentPullResponse>(`${appUrl}/api/agent/pull`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-agent-token": agentToken,
+        },
+        body: JSON.stringify({}),
+        timeoutMs: Math.max(5000, timeoutMs * 2),
+      });
+
+      if (!pull.ok || !pull.data) {
+        log("pull_failed", { status: pull.status, text: pull.text });
+      } else {
+        devices = pull.data.devices ?? [];
+
+        // Merge persisted backoff state.
+        const backoffRows = pull.data.device_backoff ?? [];
+        for (const row of backoffRows) {
+          const deviceId = row.device_id;
+          const nextAllowedAtMs = row.next_allowed_at ? new Date(row.next_allowed_at).getTime() : 0;
+          const existing = deviceSchedule.get(deviceId);
+          deviceSchedule.set(deviceId, {
+            nextRunAtMs: existing?.nextRunAtMs ?? nowMs + jitterMs(3000),
+            backoffSeconds: row.backoff_seconds ?? 0,
+            nextAllowedAtMs: Number.isFinite(nextAllowedAtMs) ? nextAllowedAtMs : 0,
+            reason: row.reason ?? null,
+            lastStatusAtMs: existing?.lastStatusAtMs ?? 0,
+            lastGood: existing?.lastGood ?? null,
+          });
+        }
+
+        // Seed schedules for newly discovered devices (spread across the interval).
+        const spreadMs = Math.max(1, Math.floor((deviceIntervalSeconds * 1000) / Math.max(1, devices.length)));
+        devices.forEach((d, idx) => {
+          if (deviceSchedule.has(d.id)) return;
+          deviceSchedule.set(d.id, {
+            nextRunAtMs: nowMs + idx * spreadMs + jitterMs(3000),
+            backoffSeconds: 0,
+            nextAllowedAtMs: 0,
+            reason: null,
+            lastStatusAtMs: 0,
+            lastGood: null,
+          });
+        });
+
+        const dueMonitors = (pull.data.monitors ?? []).filter((m) => !shouldSkip(`m:${m.id}`, nowMs));
+        if (dueMonitors.length) {
+          const monitorReports = await mapWithConcurrency(dueMonitors, monitorConcurrency, async (m) => {
+            const key = `m:${m.id}`;
+            try {
+              const r = await runMonitorCheck(m, timeoutMs);
+              recordResult(key, r.status !== "DOWN", nowMs);
+              return r;
+            } catch (e) {
+              recordResult(key, false, nowMs);
+              return {
+                id: m.id,
+                checked_at: new Date().toISOString(),
+                status: "DOWN" as const,
+                latency_ms: null,
+                error_message: e instanceof Error ? e.message : String(e),
+                check_method: "TCP" as const,
+              };
+            }
+          });
+
+          await sendReport({ monitors: monitorReports });
+        }
+      }
     }
-    const elapsed = Date.now() - start;
-    const waitMs = Math.max(0, intervalSeconds * 1000 - elapsed);
-    await sleep(waitMs);
+
+    // Process devices that are due; keep device concurrency low and add per-device jitter.
+    const dueDevices = devices
+      .map((d) => ({ d, s: deviceSchedule.get(d.id) }))
+      .filter(({ s }) => !!s)
+      .filter(({ d, s }) => !shouldSkip(`d:${d.id}`, nowMs) && nowMs >= (s!.nextRunAtMs ?? 0))
+      .filter(({ s }) => !s!.nextAllowedAtMs || nowMs >= s!.nextAllowedAtMs)
+      .sort((a, b) => (a.s!.nextRunAtMs ?? 0) - (b.s!.nextRunAtMs ?? 0))
+      .slice(0, Math.max(1, deviceConcurrency))
+      .map(({ d }) => d);
+
+    if (dueDevices.length) {
+      const deviceReports: AgentDeviceMetricReport[] = [];
+      const backoffUpdates: AgentDeviceBackoffReport[] = [];
+
+      for (const device of dueDevices) {
+        const state = deviceSchedule.get(device.id)!;
+        await sleep(jitterMs(3000));
+
+        const key = `d:${device.id}`;
+        try {
+          const includeStatus = nowMs - state.lastStatusAtMs >= deviceStatusIntervalSeconds * 1000;
+          const r = await runDeviceCheck(device, deviceTimeoutMs, { includeStatus });
+          recordResult(key, r.status !== "DOWN", nowMs);
+
+          // If we attempted the static "status" call, don't keep hammering it on failures.
+          if (includeStatus) {
+            state.lastStatusAtMs = nowMs;
+          }
+
+          // Detect FortiGate rate-limit in a stable way.
+          const is429 =
+            r.status === "DEGRADED" &&
+            typeof r.error === "string" &&
+            r.error.startsWith("rate limited by FortiGate (429)");
+          if (is429) {
+            // Keep last good values in the row so the UI stays useful during backoff.
+            const merged: AgentDeviceMetricReport = {
+              ...r,
+              uptime_seconds: state.lastGood?.uptime_seconds ?? r.uptime_seconds ?? null,
+              cpu_percent: state.lastGood?.cpu_percent ?? r.cpu_percent ?? null,
+              mem_percent: state.lastGood?.mem_percent ?? r.mem_percent ?? null,
+              sessions: state.lastGood?.sessions ?? r.sessions ?? null,
+              wan1_status: state.lastGood?.wan1_status ?? r.wan1_status ?? null,
+              wan2_status: state.lastGood?.wan2_status ?? r.wan2_status ?? null,
+              lan_status: state.lastGood?.lan_status ?? r.lan_status ?? null,
+              wan1_ip: state.lastGood?.wan1_ip ?? r.wan1_ip ?? null,
+              wan2_ip: state.lastGood?.wan2_ip ?? r.wan2_ip ?? null,
+              lan_ip: state.lastGood?.lan_ip ?? r.lan_ip ?? null,
+            };
+            deviceReports.push(merged);
+
+            const nextBackoff = Math.min(state.backoffSeconds ? state.backoffSeconds * 2 : 60, 300);
+            const nextAllowedAtMs = nowMs + nextBackoff * 1000;
+            state.backoffSeconds = nextBackoff;
+            state.nextAllowedAtMs = nextAllowedAtMs;
+            state.reason = "429";
+            state.nextRunAtMs = nextAllowedAtMs + jitterMs(3000);
+            backoffUpdates.push({
+              device_id: device.id,
+              backoff_seconds: nextBackoff,
+              next_allowed_at: new Date(nextAllowedAtMs).toISOString(),
+              reason: "429 rate limit",
+            });
+            log("device_backoff", { device_id: device.id, site: device.site, backoff_seconds: nextBackoff });
+          } else {
+            deviceReports.push(r);
+
+            // Cache last successful metric payload for resilience.
+            if (r.status !== "DOWN") {
+              state.lastGood = {
+                uptime_seconds: r.uptime_seconds ?? null,
+                cpu_percent: r.cpu_percent ?? null,
+                mem_percent: r.mem_percent ?? null,
+                sessions: r.sessions ?? null,
+                wan1_status: r.wan1_status ?? null,
+                wan2_status: r.wan2_status ?? null,
+                lan_status: r.lan_status ?? null,
+                wan1_ip: r.wan1_ip ?? null,
+                wan2_ip: r.wan2_ip ?? null,
+                lan_ip: r.lan_ip ?? null,
+              };
+            }
+
+            // Clear backoff on successful/non-429 attempts.
+            if (state.backoffSeconds || state.nextAllowedAtMs) {
+              state.backoffSeconds = 0;
+              state.nextAllowedAtMs = 0;
+              state.reason = null;
+              backoffUpdates.push({
+                device_id: device.id,
+                backoff_seconds: 0,
+                next_allowed_at: null,
+                reason: null,
+              });
+            }
+            state.nextRunAtMs = nowMs + deviceIntervalSeconds * 1000 + jitterMs(3000);
+          }
+        } catch (e) {
+          recordResult(key, false, nowMs);
+          deviceReports.push({
+            device_id: device.id,
+            checked_at: new Date().toISOString(),
+            reachable: false,
+            status: "DOWN",
+            error: e instanceof Error ? e.message : String(e),
+          });
+          state.nextRunAtMs = nowMs + deviceIntervalSeconds * 1000 + jitterMs(3000);
+        }
+
+        deviceSchedule.set(device.id, state);
+      }
+
+      await sendReport({ device_metrics: deviceReports, device_backoff: backoffUpdates });
+    }
+
+    await sleep(1000);
   }
 }
 

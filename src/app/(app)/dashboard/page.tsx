@@ -64,6 +64,13 @@ type DevicesPayload = {
       wan2_status: string | null;
       error: string | null;
     } | null;
+    backoff: {
+      device_id: string;
+      backoff_seconds: number;
+      next_allowed_at: string | null;
+      reason: string | null;
+      updated_at: string;
+    } | null;
   }>;
 };
 
@@ -235,8 +242,9 @@ export default function DashboardPage() {
         <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4 shadow-xl">
           {devices.length ? (
             <div className="divide-y divide-white/5">
-              {devices.map(({ device, latest }) => (
+              {devices.map(({ device, latest, backoff }) => (
                 <div key={device.id} className="flex flex-col gap-2 py-3 text-sm">
+                  {/** backoff info */}
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <p className="font-semibold text-white">
@@ -267,6 +275,20 @@ export default function DashboardPage() {
                     <span>WAN2: {latest?.wan2_status ?? "--"}</span>
                     <span>Atualizado: {latest?.checked_at ? new Date(latest.checked_at).toLocaleTimeString() : "--"}</span>
                   </div>
+                  {(() => {
+                    const nextAllowed = backoff?.next_allowed_at ?? null;
+                    const reason = backoff?.reason ?? null;
+                    if (!nextAllowed) return null;
+                    const nextMs = new Date(nextAllowed).getTime();
+                    if (!Number.isFinite(nextMs)) return null;
+                    const diffSec = Math.max(0, Math.round((nextMs - Date.now()) / 1000));
+                    if (diffSec <= 0) return null;
+                    return (
+                      <p className="text-xs text-slate-500">
+                        Proximo retry em {diffSec}s{reason ? ` (${reason})` : ""}
+                      </p>
+                    );
+                  })()}
                 </div>
               ))}
             </div>

@@ -1,4 +1,4 @@
-import { fetchJson } from "../util.js";
+import { fetchJson, log } from "../util.js";
 
 export type FortiGateDeviceTask = {
   id: string;
@@ -27,6 +27,7 @@ export type FortiGateMetrics = {
   lanStatus: string | null;
   lanIp: string | null;
   error: string | null;
+  rateLimited?: boolean;
 };
 
 function withAccessToken(url: string, token: string, mode: "query" | "header") {
@@ -192,7 +193,7 @@ function extractInterfaces(
 
 export async function collectFortiGateApiMetrics(
   device: FortiGateDeviceTask,
-  opts: { timeoutMs?: number; tokenMode?: "query" | "header" } = {},
+  opts: { timeoutMs?: number; tokenMode?: "query" | "header"; includeStatus?: boolean } = {},
 ): Promise<FortiGateMetrics> {
   const ref = device.api_token_secret_ref?.trim() ?? null;
   const token = getTokenForDevice(device);
@@ -241,24 +242,55 @@ export async function collectFortiGateApiMetrics(
 
   const timeoutMs = opts.timeoutMs ?? 2500;
   const tokenMode = opts.tokenMode ?? ((process.env.FORTIGATE_TOKEN_MODE as "query" | "header" | undefined) ?? "query");
+  const includeStatus = opts.includeStatus ?? false;
 
   const headers: Record<string, string> = {};
   if (tokenMode === "header") {
     headers["Authorization"] = `Bearer ${token}`;
   }
 
-  const statusUrl = withAccessToken(`${base}/api/v2/monitor/system/status`, token, tokenMode);
   const perfUrl = withAccessToken(`${base}/api/v2/monitor/system/performance/status`, token, tokenMode);
   const ifaceUrl = withAccessToken(`${base}/api/v2/monitor/system/interface`, token, tokenMode);
+  const statusUrl = withAccessToken(`${base}/api/v2/monitor/system/status`, token, tokenMode);
+  const statusRes = includeStatus ? await fetchJson<any>(statusUrl, { headers, timeoutMs }) : null;
 
-  const statusRes = await fetchJson<any>(statusUrl, { headers, timeoutMs });
-  if (!statusRes.ok || !statusRes.data) {
+  const hostname = statusRes?.ok && statusRes.data ? extractHostname(statusRes.data) ?? device.hostname ?? null : device.hostname ?? null;
+  const firmwareVersion = statusRes?.ok && statusRes.data ? extractFirmware(statusRes.data) : null;
+  const uptimeSeconds = statusRes?.ok && statusRes.data ? extractUptimeSeconds(statusRes.data) : null;
+
+  const perfRes = await fetchJson<any>(perfUrl, { headers, timeoutMs });
+  const ifaceRes = await fetchJson<any>(ifaceUrl, { headers, timeoutMs });
+
+  // Basic observability: log non-2xx responses per endpoint with latency.
+  const truncate = (value: unknown) => {
+    const s = typeof value === "string" ? value : value == null ? "" : String(value);
+    return s.length > 220 ? `${s.slice(0, 220)}...` : s;
+  };
+
+  const maybeLog = (endpoint: string, r: { ok: boolean; status: number; text: string | null; duration_ms: number }) => {
+    if (r.ok) return;
+    log("fgt_http", {
+      device_id: device.id,
+      site: device.site,
+      endpoint,
+      status: r.status,
+      duration_ms: r.duration_ms,
+      text: truncate(r.text),
+    });
+  };
+
+  if (statusRes) maybeLog("status", statusRes);
+  maybeLog("perf", perfRes);
+  maybeLog("iface", ifaceRes);
+
+  // Rate-limit: treat as reachable but degraded.
+  if (statusRes?.status === 429 || perfRes.status === 429 || ifaceRes.status === 429) {
     return {
-      reachable: false,
-      status: "DOWN",
-      hostname: device.hostname,
-      firmwareVersion: null,
-      uptimeSeconds: null,
+      reachable: true,
+      status: "DEGRADED",
+      hostname,
+      firmwareVersion,
+      uptimeSeconds,
       cpuPercent: null,
       memPercent: null,
       sessions: null,
@@ -268,24 +300,71 @@ export async function collectFortiGateApiMetrics(
       wan2Ip: null,
       lanStatus: null,
       lanIp: null,
-      error: statusRes.text ?? `api status failed (${statusRes.status})`,
+      rateLimited: true,
+      error: "rate limited by FortiGate (429) - reduce AGENT_DEVICE_CONCURRENCY or increase interval",
     };
   }
 
-  const hostname = extractHostname(statusRes.data) ?? device.hostname ?? null;
-  const firmwareVersion = extractFirmware(statusRes.data);
-  const uptimeSeconds = extractUptimeSeconds(statusRes.data);
+  // Unauthorized/forbidden: reachable but misconfigured.
+  const anyAuthError =
+    (statusRes && (statusRes.status === 401 || statusRes.status === 403)) ||
+    perfRes.status === 401 ||
+    perfRes.status === 403 ||
+    ifaceRes.status === 401 ||
+    ifaceRes.status === 403;
 
-  const perfRes = await fetchJson<any>(perfUrl, { headers, timeoutMs });
-  const ifaceRes = await fetchJson<any>(ifaceUrl, { headers, timeoutMs });
+  if (anyAuthError) {
+    return {
+      reachable: true,
+      status: "DEGRADED",
+      hostname,
+      firmwareVersion,
+      uptimeSeconds,
+      cpuPercent: null,
+      memPercent: null,
+      sessions: null,
+      wan1Status: null,
+      wan1Ip: null,
+      wan2Status: null,
+      wan2Ip: null,
+      lanStatus: null,
+      lanIp: null,
+      error: "unauthorized (401/403) - check token permissions/trusted hosts",
+    };
+  }
 
   const perf = perfRes.ok && perfRes.data ? extractPerf(perfRes.data) : { cpu: null, mem: null, sessions: null };
-  const iface =
-    ifaceRes.ok && ifaceRes.data
-      ? extractInterfaces(ifaceRes.data, device.wan_public_ips ?? [])
-      : { wan1Status: null, wan1Ip: null, wan2Status: null, wan2Ip: null, lanStatus: null, lanIp: null };
+  const iface = ifaceRes.ok && ifaceRes.data
+    ? extractInterfaces(ifaceRes.data, device.wan_public_ips ?? [])
+    : { wan1Status: null, wan1Ip: null, wan2Status: null, wan2Ip: null, lanStatus: null, lanIp: null };
 
-  const degraded = !perfRes.ok || !ifaceRes.ok;
+  const anyOk = perfRes.ok || ifaceRes.ok || (statusRes?.ok ?? false);
+  if (!anyOk) {
+    const status =
+      statusRes?.text ??
+      perfRes.text ??
+      ifaceRes.text ??
+      `api failed (perf=${perfRes.status} iface=${ifaceRes.status}${statusRes ? ` status=${statusRes.status}` : ""})`;
+    return {
+      reachable: false,
+      status: "DOWN",
+      hostname,
+      firmwareVersion,
+      uptimeSeconds,
+      cpuPercent: null,
+      memPercent: null,
+      sessions: null,
+      wan1Status: null,
+      wan1Ip: null,
+      wan2Status: null,
+      wan2Ip: null,
+      lanStatus: null,
+      lanIp: null,
+      error: status,
+    };
+  }
+
+  const degraded = !perfRes.ok || !ifaceRes.ok || (includeStatus && !(statusRes?.ok ?? true));
 
   return {
     reachable: true,

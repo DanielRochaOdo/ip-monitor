@@ -26,28 +26,36 @@ export function getEnvInt(key: string, fallback: number) {
 export async function fetchJson<T>(
   url: string,
   init: RequestInit & { timeoutMs?: number } = {},
-): Promise<{ ok: boolean; status: number; data: T | null; text: string | null }> {
+): Promise<{ ok: boolean; status: number; data: T | null; text: string | null; duration_ms: number }> {
   const controller = new AbortController();
   const timeoutMs = init.timeoutMs ?? 10_000;
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const startedAt = Date.now();
 
   try {
     const res = await fetch(url, { ...init, signal: controller.signal });
     const status = res.status;
     const contentType = res.headers.get("content-type") ?? "";
+    const duration_ms = Date.now() - startedAt;
     if (contentType.includes("application/json")) {
       const data = (await res.json()) as T;
-      return { ok: res.ok, status, data, text: null };
+      return { ok: res.ok, status, data, text: null, duration_ms };
     }
     const text = await res.text();
-    return { ok: res.ok, status, data: null, text };
+    return { ok: res.ok, status, data: null, text, duration_ms };
   } catch (error) {
     // Node/undici throws AbortError on timeout. Return a stable shape so callers can surface
     // a useful error message instead of crashing the cycle.
     const name = error instanceof Error ? error.name : null;
     const message = error instanceof Error ? error.message : String(error);
     if (name === "AbortError" || message.toLowerCase().includes("aborted")) {
-      return { ok: false, status: 0, data: null, text: `timeout after ${timeoutMs}ms` };
+      return {
+        ok: false,
+        status: 0,
+        data: null,
+        text: `timeout after ${timeoutMs}ms`,
+        duration_ms: Date.now() - startedAt,
+      };
     }
 
     if (error instanceof Error) {
@@ -75,10 +83,10 @@ export async function fetchJson<T>(
         }
       }
 
-      return { ok: false, status: 0, data: null, text: parts.join(" | ") };
+      return { ok: false, status: 0, data: null, text: parts.join(" | "), duration_ms: Date.now() - startedAt };
     }
 
-    return { ok: false, status: 0, data: null, text: message };
+    return { ok: false, status: 0, data: null, text: message, duration_ms: Date.now() - startedAt };
   } finally {
     clearTimeout(timeout);
   }

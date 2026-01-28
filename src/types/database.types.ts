@@ -332,6 +332,47 @@ export type Database = {
           },
         ];
       };
+      device_backoff: {
+        Row: {
+          device_id: string;
+          agent_id: string | null;
+          backoff_seconds: number;
+          next_allowed_at: string | null;
+          reason: string | null;
+          updated_at: string;
+        };
+        Insert: {
+          device_id: string;
+          agent_id?: string | null;
+          backoff_seconds?: number;
+          next_allowed_at?: string | null;
+          reason?: string | null;
+          updated_at?: string;
+        };
+        Update: {
+          agent_id?: string | null;
+          backoff_seconds?: number;
+          next_allowed_at?: string | null;
+          reason?: string | null;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "device_backoff_device_id_fkey";
+            columns: ["device_id"];
+            isOneToOne?: boolean;
+            referencedRelation: "network_devices";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "device_backoff_agent_id_fkey";
+            columns: ["agent_id"];
+            isOneToOne?: boolean;
+            referencedRelation: "agents";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       monitor_incidents: {
         Row: {
           id: string;
