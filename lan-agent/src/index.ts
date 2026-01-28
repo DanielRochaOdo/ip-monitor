@@ -477,7 +477,9 @@ async function main() {
           // - If manual run requested: prioritize WAN/LAN interfaces (this fixes "WAN missing" quickly).
           // - Else: refresh interfaces when stale, otherwise refresh perf (cpu/mem).
           // - Status is very infrequent (24h) and takes over a single run when due.
-          const statusDue = nowMs - state.lastStatusAtMs >= deviceStatusIntervalSeconds * 1000;
+          const statusDue =
+            deviceStatusIntervalSeconds > 0 &&
+            nowMs - state.lastStatusAtMs >= deviceStatusIntervalSeconds * 1000;
           const ifaceDue = nowMs - state.lastIfaceAtMs >= deviceInterfaceIntervalSeconds * 1000;
           const perfDue = nowMs - state.lastPerfAtMs >= deviceStepSeconds * 1000;
 

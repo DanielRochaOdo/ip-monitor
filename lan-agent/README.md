@@ -30,6 +30,7 @@ Este agente roda dentro da sua rede (LAN) e executa checks que nao funcionam na 
   - **perf** (cpu/mem): roda por padrao a cada `AGENT_DEVICE_STEP_SECONDS`.
   - **iface** (WAN/LAN up/down): roda com cache por device a cada `AGENT_DEVICE_INTERFACE_INTERVAL_SECONDS`.
   - **status** (hostname/firmware/uptime): roda com cache por device a cada `AGENT_DEVICE_STATUS_INTERVAL_SECONDS`.
+    Para desligar esse endpoint (evitar 429 nele), use `AGENT_DEVICE_STATUS_INTERVAL_SECONDS=0`.
 
 Defaults recomendados (estaveis para poucos devices):
 
