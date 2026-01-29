@@ -22,7 +22,8 @@ export async function GET(request: Request) {
 
     const { data: devices, error } = await supabase
       .from("network_devices")
-      .select("id, site, hostname, vendor, model, wan_public_ips, lan_ip, mgmt_method")
+      .select("id, site, hostname, vendor, model, wan_public_ips, lan_ip, mgmt_method, agent_id")
+      .not("agent_id", "is", null)
       .order("site", { ascending: true });
 
     if (error) throw error;

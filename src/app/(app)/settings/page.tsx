@@ -35,6 +35,7 @@ export default function SettingsPage() {
   const [creatingAgent, setCreatingAgent] = useState(false);
   const [newAgentToken, setNewAgentToken] = useState<string | null>(null);
   const [agentForm, setAgentForm] = useState({ name: "", site: "Parangaba" });
+  const [deletingAgentId, setDeletingAgentId] = useState<string | null>(null);
 
   const toast = useToast();
   const session = useSession();
@@ -191,6 +192,31 @@ export default function SettingsPage() {
     }
   };
 
+  const handleDeleteAgent = async (agentId: string) => {
+    if (!session?.access_token) return;
+    if (!confirm("Tem certeza que deseja excluir este agente?")) return;
+    setDeletingAgentId(agentId);
+    try {
+      const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}`, {
+        method: "DELETE",
+        headers: authHeaders,
+      });
+      const payload: unknown = await res.json().catch(() => null);
+      if (!res.ok) {
+        const message =
+          payload && typeof payload === "object" && "error" in payload
+            ? String((payload as { error?: unknown }).error ?? "Falha ao excluir agente")
+            : "Falha ao excluir agente";
+        toast.push({ title: "Erro ao excluir agente", description: message, variant: "error" });
+        return;
+      }
+      toast.push({ title: "Agente excluido", variant: "success" });
+      await refreshAgents();
+    } finally {
+      setDeletingAgentId(null);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-6 shadow-xl">
@@ -325,8 +351,18 @@ export default function SettingsPage() {
             agents.map((agent) => (
               <div key={agent.id} className="rounded-xl border border-white/10 bg-slate-950/40 p-3 text-sm">
                 <div className="flex items-center justify-between">
-                  <span className="font-semibold text-white">{agent.name}</span>
-                  <span className="text-xs uppercase tracking-[0.3em] text-slate-400">{agent.site}</span>
+                  <div className="flex items-center gap-3">
+                    <span className="font-semibold text-white">{agent.name}</span>
+                    <span className="text-xs uppercase tracking-[0.3em] text-slate-400">{agent.site}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleDeleteAgent(agent.id)}
+                    disabled={deletingAgentId === agent.id}
+                    className="rounded-full border border-rose-400/40 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.3em] text-rose-200 hover:border-rose-400/80 disabled:opacity-60"
+                  >
+                    {deletingAgentId === agent.id ? "Excluindo..." : "Excluir"}
+                  </button>
                 </div>
                 <div className="mt-1 text-xs text-slate-400">
                   <span>Status: {agent.is_active ? "ativo" : "inativo"}</span>{" "}
