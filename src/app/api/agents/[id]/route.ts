@@ -9,10 +9,14 @@ type Params = {
   };
 };
 
-export async function DELETE(request: Request, { params }: Params) {
+export async function DELETE(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
   try {
     const { supabase, user } = await getServerSupabaseClient(request);
-    const agentId = params.id;
+    const resolvedParams = await params;
+    const agentId = resolvedParams.id;
 
     if (!agentId) {
       return NextResponse.json({ error: "id obrigatorio" }, { status: 400 });
