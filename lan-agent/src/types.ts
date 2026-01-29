@@ -47,6 +47,9 @@ export type AgentPullResponse = {
     device_id: string;
     backoff_seconds: number;
     next_allowed_at: string | null;
+    rate_limit_count?: number;
+    iface_next_allowed_at?: string | null;
+    last_error?: string | null;
     reason: string | null;
     updated_at: string;
   }>;
@@ -90,6 +93,9 @@ export type AgentDeviceBackoffReport = {
   device_id: string;
   backoff_seconds: number;
   next_allowed_at: string | null;
+  rate_limit_count?: number;
+  iface_next_allowed_at?: string | null;
+  last_error?: string | null;
   reason?: string | null;
 };
 

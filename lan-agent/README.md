@@ -34,12 +34,14 @@ Este agente roda dentro da sua rede (LAN) e executa checks que nao funcionam na 
 
 Defaults recomendados (estaveis para poucos devices):
 
-- `AGENT_CONCURRENCY=2` (monitores)
+- `AGENT_CONCURRENCY=1` (monitores)
 - `AGENT_DEVICE_CONCURRENCY=1` (compat; o scheduler roda 1 por step)
-- `AGENT_DEVICE_STEP_SECONDS=60` (1 device / 1 min; ajuste para 300 se houver 429)
-- `AGENT_DEVICE_INTERFACE_INTERVAL_SECONDS=900` (15 min)
+- `AGENT_DEVICE_STEP_SECONDS=600` (1 device / 10 min)
+- `AGENT_DEVICE_INTERFACE_INTERVAL_SECONDS=3600` (1 hora)
+- `AGENT_DEVICE_BACKOFF_CAP_SECONDS=3600` (backoff max 1 hora)
+- `AGENT_DEVICE_IFACE_COOLDOWN_SECONDS=3600` (cooldown do endpoint iface)
 
-Se voce ver `DEGRADED` com erro 429, aumente `AGENT_DEVICE_STEP_SECONDS` (ex.: 300 -> 600) e/ou `AGENT_DEVICE_INTERFACE_INTERVAL_SECONDS` (ex.: 900 -> 1800).
+Se voce ver `DEGRADED` com erro 429, aumente `AGENT_DEVICE_STEP_SECONDS` (ex.: 600 -> 1200) e/ou `AGENT_DEVICE_INTERFACE_INTERVAL_SECONDS` (ex.: 3600 -> 7200).
 
 ### Overrides por site (Aguanambi/Bezerra, etc.)
 
@@ -64,6 +66,12 @@ FGT_AGUANAMBI_BACKOFF_CAP_SECONDS=1800
 No dashboard, cada FortiGate tem um botao **Monitorar agora**. Isso cria uma solicitacao no banco e o LAN Agent prioriza esse device na proxima rodada.
 
 Requisito: aplicar a migration `supabase/migrations/005_device_run_requests.sql` no Supabase.
+
+## Validar variaveis do container
+
+```bash
+docker compose exec lan-agent-1 printenv | egrep "DEVICE_STEP|INTERFACE_INTERVAL|BACKOFF_CAP|CONCURRENCY|FGT_|AGENT_TOKEN"
+```
 
 ## Rodar local
 
