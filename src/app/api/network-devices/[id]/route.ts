@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSupabaseClient } from "@/lib/supabase/route";
 import { encryptDeviceToken } from "@/lib/crypto/device-token";
 
-type Params = { params: { id: string } };
+type Params = { params: Promise<{ id: string }> };
 
 type NetworkDevicePayload = {
   site?: string;
@@ -40,13 +40,14 @@ function normalizeIps(value: NetworkDevicePayload["wan_public_ips"]): string[] |
 export async function GET(request: Request, { params }: Params) {
   try {
     const { supabase, user } = await getServerSupabaseClient(request);
+    const { id } = await params;
     const { data, error } = await supabase
       .from("network_devices")
       .select(
         "id, site, hostname, vendor, model, firmware_expected, wan_public_ips, lan_ip, agent_id, mgmt_method, mgmt_port, api_base_url, api_token_secret_ref, api_token_encrypted, step_seconds, interface_interval_seconds, status_interval_seconds, backoff_cap_seconds, iface_cooldown_seconds, snmp_version, snmp_target, snmp_community, created_at, updated_at",
       )
       .eq("user_id", user.id)
-      .eq("id", params.id)
+      .eq("id", id)
       .maybeSingle();
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -64,6 +65,7 @@ export async function GET(request: Request, { params }: Params) {
 export async function PATCH(request: Request, { params }: Params) {
   try {
     const { supabase, user } = await getServerSupabaseClient(request);
+    const { id } = await params;
     const payload = (await request.json()) as NetworkDevicePayload;
 
     const updates: Record<string, unknown> = {
@@ -101,7 +103,7 @@ export async function PATCH(request: Request, { params }: Params) {
     const { error } = await supabase
       .from("network_devices")
       .update(updates)
-      .eq("id", params.id)
+      .eq("id", id)
       .eq("user_id", user.id);
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -115,7 +117,8 @@ export async function PATCH(request: Request, { params }: Params) {
 export async function DELETE(request: Request, { params }: Params) {
   try {
     const { supabase, user } = await getServerSupabaseClient(request);
-    const { error } = await supabase.from("network_devices").delete().eq("id", params.id).eq("user_id", user.id);
+    const { id } = await params;
+    const { error } = await supabase.from("network_devices").delete().eq("id", id).eq("user_id", user.id);
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     return NextResponse.json({ ok: true });
   } catch (error) {
