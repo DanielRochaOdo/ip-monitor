@@ -295,7 +295,7 @@ export default function DashboardPage() {
         </div>
         <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4 shadow-xl">
           <div className="mb-4 flex flex-col gap-1 text-xs text-slate-400 sm:flex-row sm:items-center sm:justify-between">
-            <p>Automatico: round-robin (1 device por vez) para evitar 429.</p>
+            <p>Automatico: round-robin (1 device por vez). Cadencia definida no agente (AGENT_DEVICE_STEP_SECONDS).</p>
             <p>
               Ultimo check:{" "}
               {lastDeviceChecked

@@ -36,10 +36,28 @@ Defaults recomendados (estaveis para poucos devices):
 
 - `AGENT_CONCURRENCY=2` (monitores)
 - `AGENT_DEVICE_CONCURRENCY=1` (compat; o scheduler roda 1 por step)
-- `AGENT_DEVICE_STEP_SECONDS=300` (1 device / 5 min)
+- `AGENT_DEVICE_STEP_SECONDS=60` (1 device / 1 min; ajuste para 300 se houver 429)
 - `AGENT_DEVICE_INTERFACE_INTERVAL_SECONDS=900` (15 min)
 
 Se voce ver `DEGRADED` com erro 429, aumente `AGENT_DEVICE_STEP_SECONDS` (ex.: 300 -> 600) e/ou `AGENT_DEVICE_INTERFACE_INTERVAL_SECONDS` (ex.: 900 -> 1800).
+
+### Overrides por site (Aguanambi/Bezerra, etc.)
+
+Voce pode reduzir a agressividade por dispositivo usando variaveis por site:
+
+- `FGT_<SITE>_STEP_SECONDS`
+- `FGT_<SITE>_INTERFACE_INTERVAL_SECONDS`
+- `FGT_<SITE>_STATUS_INTERVAL_SECONDS`
+- `FGT_<SITE>_BACKOFF_CAP_SECONDS`
+
+Exemplo:
+
+```
+FGT_AGUANAMBI_STEP_SECONDS=600
+FGT_AGUANAMBI_INTERFACE_INTERVAL_SECONDS=1800
+FGT_AGUANAMBI_STATUS_INTERVAL_SECONDS=0
+FGT_AGUANAMBI_BACKOFF_CAP_SECONDS=1800
+```
 
 ## Verificacao manual ("Monitorar agora")
 
