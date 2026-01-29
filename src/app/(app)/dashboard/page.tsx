@@ -50,6 +50,7 @@ type DevicesPayload = {
       wan_public_ips: string[];
       lan_ip: string | null;
       mgmt_method: string;
+      step_seconds?: number | null;
     };
     latest: {
       checked_at: string;
@@ -161,6 +162,35 @@ export default function DashboardPage() {
       }
     }
     return best;
+  }, [devices]);
+
+  const nextDeviceCheck = useMemo(() => {
+    let next: { site: string; at: string } | null = null;
+    for (const row of devices) {
+      const candidates = [row.backoff?.next_allowed_at, row.backoff?.iface_next_allowed_at]
+        .filter((value): value is string => !!value)
+        .map((value) => ({ at: value, ts: new Date(value).getTime() }))
+        .filter((value) => Number.isFinite(value.ts) && value.ts > Date.now());
+      if (!candidates.length) continue;
+      const soonest = candidates.sort((a, b) => a.ts - b.ts)[0];
+      if (!next || soonest.ts < new Date(next.at).getTime()) {
+        next = { site: row.device.site, at: soonest.at };
+      }
+    }
+    if (next) return next;
+
+    // No backoff: estimate using agent cadence (round-robin).
+    const deviceCount = devices.length || 1;
+    let estimate: { site: string; at: string } | null = null;
+    for (const row of devices) {
+      if (!row.latest?.checked_at) continue;
+      const stepSeconds = row.device.step_seconds ?? 60;
+      const nextAt = new Date(new Date(row.latest.checked_at).getTime() + stepSeconds * 1000 * deviceCount);
+      if (!estimate || nextAt.getTime() < new Date(estimate.at).getTime()) {
+        estimate = { site: row.device.site, at: nextAt.toISOString() };
+      }
+    }
+    return estimate;
   }, [devices]);
 
   const requestDeviceRunNow = useCallback(
@@ -298,18 +328,19 @@ export default function DashboardPage() {
         </div>
         <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4 shadow-xl">
           <div className="mb-4 flex flex-col gap-1 text-xs text-slate-400 sm:flex-row sm:items-center sm:justify-between">
-            <p>Automatico: round-robin (1 device por vez). Cadencia definida no agente (AGENT_DEVICE_STEP_SECONDS).</p>
             <p>
               Ultimo check:{" "}
               {lastDeviceChecked
                 ? `${lastDeviceChecked.site} as ${new Date(lastDeviceChecked.at).toLocaleTimeString()}`
                 : "--"}
             </p>
+            <p>
+              Proximo check:{" "}
+              {nextDeviceCheck
+                ? `${nextDeviceCheck.site} as ${new Date(nextDeviceCheck.at).toLocaleTimeString()}`
+                : "--"}
+            </p>
           </div>
-          <p className="mb-4 text-xs text-slate-500">
-            Dica: se aparecer 429 rate limit, aumente{" "}
-            <code className="text-slate-300">AGENT_DEVICE_STEP_SECONDS</code> no LAN Agent (ex.: 300 = 5 min).
-          </p>
           {devices.length ? (
             <div className="divide-y divide-white/5">
               {devices.map(({ device, latest, backoff, run_request }) => (
@@ -357,7 +388,7 @@ export default function DashboardPage() {
                   <div className="grid grid-cols-2 gap-2 text-xs text-slate-300 sm:grid-cols-6">
                     <span>CPU: {latest?.cpu_percent ?? "--"}%</span>
                     <span>Mem: {latest?.mem_percent ?? "--"}%</span>
-                    <span>Sessoes: {latest?.sessions ?? "--"}</span>
+                    <span>Sessoes: {latest?.sessions ?? "N/A"}</span>
                     <span>WAN1: {latest?.wan1_status ?? "--"}</span>
                     <span>WAN2: {latest?.wan2_status ?? "--"}</span>
                     <span>Atualizado: {latest?.checked_at ? new Date(latest.checked_at).toLocaleTimeString() : "--"}</span>

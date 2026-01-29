@@ -720,6 +720,7 @@ async function main() {
               wan1_ip: r.wan1_ip ?? state.lastGood?.wan1_ip ?? null,
               wan2_ip: r.wan2_ip ?? state.lastGood?.wan2_ip ?? null,
               lan_ip: r.lan_ip ?? state.lastGood?.lan_ip ?? null,
+              sessions: r.sessions ?? state.lastGood?.sessions ?? null,
             };
             deviceReports.push(effective);
 
