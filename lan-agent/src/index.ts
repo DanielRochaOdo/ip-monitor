@@ -34,7 +34,10 @@ const deviceSchedule = new Map<
     nextRunAtMs: number;
     backoffSeconds: number;
     nextAllowedAtMs: number;
+    ifaceNextAllowedAtMs: number;
     reason: string | null;
+    lastError: string | null;
+    rateLimitCount: number;
     lastStatusAtMs: number;
     lastIfaceAtMs: number;
     lastPerfAtMs: number;
@@ -309,20 +312,16 @@ async function main() {
 
   // Poll monitors separately (60s) so monitor intervals in DB are respected.
   const monitorPollSeconds = getEnvInt("AGENT_MONITOR_POLL_SECONDS", 60);
-  // Devices: avoid bursts by checking ONE device per step (default 60s).
-  // Each device ends up being checked roughly every (step * number_of_devices).
-  // If you see 429, raise the step (e.g. 300 = 5 min). Use "Monitorar agora"
-  // in the dashboard for immediate checks.
   const timeoutMs = getEnvInt("AGENT_TIMEOUT_MS", 2500);
   const deviceTimeoutMs = getEnvInt("AGENT_DEVICE_TIMEOUT_MS", Math.max(timeoutMs, 8000));
   const deviceStatusIntervalSeconds = getEnvInt("AGENT_DEVICE_STATUS_INTERVAL_SECONDS", 86400);
-  // Devices: avoid bursts by checking ONE device per step (default 60s).
-  // Each device ends up being checked roughly every (step * number_of_devices).
-  // Default is 1 device per minute. Increase to 300 (5 min) if you see 429.
-  const deviceStepSeconds = getEnvInt("AGENT_DEVICE_STEP_SECONDS", 60);
-  // How often to call the interfaces endpoint per device (default 15 min).
-  const deviceInterfaceIntervalSeconds = getEnvInt("AGENT_DEVICE_INTERFACE_INTERVAL_SECONDS", 900);
-  const deviceBackoffCapSeconds = getEnvInt("AGENT_DEVICE_BACKOFF_CAP_SECONDS", 900);
+  // Devices: avoid bursts by checking ONE device per step.
+  // Default is 10 min per device. Use "Monitorar agora" for manual checks.
+  const deviceStepSeconds = getEnvInt("AGENT_DEVICE_STEP_SECONDS", 600);
+  // How often to call the interfaces endpoint per device (default 1h).
+  const deviceInterfaceIntervalSeconds = getEnvInt("AGENT_DEVICE_INTERFACE_INTERVAL_SECONDS", 3600);
+  const deviceBackoffCapSeconds = getEnvInt("AGENT_DEVICE_BACKOFF_CAP_SECONDS", 3600);
+  const ifaceCooldownSeconds = getEnvInt("AGENT_DEVICE_IFACE_COOLDOWN_SECONDS", 3600);
   const deviceDefaults: DeviceOverrides = {
     stepSeconds: deviceStepSeconds,
     interfaceIntervalSeconds: deviceInterfaceIntervalSeconds,
@@ -330,9 +329,24 @@ async function main() {
     backoffCapSeconds: deviceBackoffCapSeconds,
   };
 
-  const monitorConcurrency = getEnvInt("AGENT_CONCURRENCY", 2);
+  const monitorConcurrency = getEnvInt("AGENT_CONCURRENCY", 1);
   // Kept for compatibility; this scheduler runs at most 1 device per step to avoid bursts.
   const deviceConcurrency = getEnvInt("AGENT_DEVICE_CONCURRENCY", 1);
+
+  const availableTokenRefs = Object.keys(process.env).filter(
+    (key) => key.startsWith("FGT_") && key.endsWith("_TOKEN"),
+  );
+  log("agent_config", {
+    monitor_poll_seconds: monitorPollSeconds,
+    device_step_seconds: deviceStepSeconds,
+    device_interface_interval_seconds: deviceInterfaceIntervalSeconds,
+    monitor_concurrency: monitorConcurrency,
+    device_concurrency: deviceConcurrency,
+    device_status_interval_seconds: deviceStatusIntervalSeconds,
+    device_backoff_cap_seconds: deviceBackoffCapSeconds,
+    iface_cooldown_seconds: ifaceCooldownSeconds,
+    token_refs: availableTokenRefs,
+  });
 
   log("agent_start", {
     monitor_poll_seconds: monitorPollSeconds,
@@ -342,6 +356,7 @@ async function main() {
     device_concurrency: deviceConcurrency,
     device_status_interval_seconds: deviceStatusIntervalSeconds,
     device_backoff_cap_seconds: deviceBackoffCapSeconds,
+    iface_cooldown_seconds: ifaceCooldownSeconds,
   });
 
   let lastPullAtMs = 0;
@@ -350,6 +365,7 @@ async function main() {
   let deviceOrder: string[] = [];
   let deviceCursor = 0;
   let nextDeviceStepAtMs = 0;
+  const missingTokenLogged = new Set<string>();
 
   for (;;) {
     const nowMs = Date.now();
@@ -372,6 +388,24 @@ async function main() {
         log("pull_failed", { status: pull.status, text: pull.text });
       } else {
         devices = pull.data.devices ?? [];
+        for (const device of devices) {
+          const ref = device.api_token_secret_ref?.trim() ?? null;
+          if (!ref) {
+            const key = `${device.id}:missing-ref`;
+            if (!missingTokenLogged.has(key)) {
+              log("device_token_missing", { device_id: device.id, site: device.site, ref: null });
+              missingTokenLogged.add(key);
+            }
+            continue;
+          }
+          if (!process.env[ref]) {
+            const key = `${device.id}:${ref}`;
+            if (!missingTokenLogged.has(key)) {
+              log("device_token_missing", { device_id: device.id, site: device.site, ref });
+              missingTokenLogged.add(key);
+            }
+          }
+        }
         pendingDeviceRunRequests = (pull.data.device_run_requests ?? []).slice().sort((a, b) => {
           const ta = new Date(a.requested_at).getTime();
           const tb = new Date(b.requested_at).getTime();
@@ -396,12 +430,16 @@ async function main() {
         for (const row of backoffRows) {
           const deviceId = row.device_id;
           const nextAllowedAtMs = row.next_allowed_at ? new Date(row.next_allowed_at).getTime() : 0;
+          const ifaceNextAllowedAtMs = row.iface_next_allowed_at ? new Date(row.iface_next_allowed_at).getTime() : 0;
           const existing = deviceSchedule.get(deviceId);
           deviceSchedule.set(deviceId, {
             nextRunAtMs: existing?.nextRunAtMs ?? nowMs + jitterMs(3000),
             backoffSeconds: row.backoff_seconds ?? 0,
             nextAllowedAtMs: Number.isFinite(nextAllowedAtMs) ? nextAllowedAtMs : 0,
+            ifaceNextAllowedAtMs: Number.isFinite(ifaceNextAllowedAtMs) ? ifaceNextAllowedAtMs : 0,
             reason: row.reason ?? null,
+            lastError: row.last_error ?? null,
+            rateLimitCount: row.rate_limit_count ?? 0,
             lastStatusAtMs: existing?.lastStatusAtMs ?? 0,
             lastIfaceAtMs: existing?.lastIfaceAtMs ?? 0,
             lastPerfAtMs: existing?.lastPerfAtMs ?? 0,
@@ -418,7 +456,10 @@ async function main() {
             nextRunAtMs: nowMs + idx * spreadMs + jitterMs(3000),
             backoffSeconds: 0,
             nextAllowedAtMs: 0,
+            ifaceNextAllowedAtMs: 0,
             reason: null,
+            lastError: null,
+            rateLimitCount: 0,
             lastStatusAtMs: 0,
             lastIfaceAtMs: 0,
             lastPerfAtMs: 0,
@@ -549,12 +590,14 @@ async function main() {
           const statusDue =
             overrides.statusIntervalSeconds > 0 &&
             nowMs - state.lastStatusAtMs >= overrides.statusIntervalSeconds * 1000;
-          const ifaceDue = nowMs - state.lastIfaceAtMs >= overrides.interfaceIntervalSeconds * 1000;
+          const ifaceCooldownActive = state.ifaceNextAllowedAtMs && nowMs < state.ifaceNextAllowedAtMs;
+          const ifaceDue =
+            !ifaceCooldownActive && nowMs - state.lastIfaceAtMs >= overrides.interfaceIntervalSeconds * 1000;
           const perfDue = nowMs - state.lastPerfAtMs >= overrides.stepSeconds * 1000;
 
           let mode: "perf" | "iface" | "status" = "perf";
           if (selectedRequestId) {
-            mode = "iface";
+            mode = ifaceCooldownActive ? "perf" : "iface";
           } else if (statusDue) {
             mode = "status";
           } else if (ifaceDue) {
@@ -570,6 +613,13 @@ async function main() {
             r.status === "DEGRADED" &&
             typeof r.error === "string" &&
             r.error.startsWith("rate limited by FortiGate (429)");
+          const rateLimitedEndpoint = r.error?.includes("endpoint=iface")
+            ? "iface"
+            : r.error?.includes("endpoint=status")
+              ? "status"
+              : r.error?.includes("endpoint=perf")
+                ? "perf"
+                : null;
 
           if (is429) {
             // Keep last good values in the row so the UI stays useful during backoff.
@@ -588,22 +638,47 @@ async function main() {
             };
             deviceReports.push(merged);
 
-            const nextBackoff = Math.min(
-              state.backoffSeconds ? state.backoffSeconds * 2 : 60,
-              overrides.backoffCapSeconds,
-            );
-            const nextAllowedAtMs = nowMs + nextBackoff * 1000;
-            state.backoffSeconds = nextBackoff;
-            state.nextAllowedAtMs = nextAllowedAtMs;
-            state.reason = "429";
-            state.nextRunAtMs = nextAllowedAtMs + jitterMs(3000);
-            backoffUpdates.push({
-              device_id: device.id,
-              backoff_seconds: nextBackoff,
-              next_allowed_at: new Date(nextAllowedAtMs).toISOString(),
-              reason: "429 rate limit",
-            });
-            log("device_backoff", { device_id: device.id, site: device.site, backoff_seconds: nextBackoff });
+            if (rateLimitedEndpoint === "iface") {
+              const nextIfaceAllowedAtMs = nowMs + ifaceCooldownSeconds * 1000;
+              state.ifaceNextAllowedAtMs = nextIfaceAllowedAtMs;
+              state.lastError = r.error ?? null;
+              backoffUpdates.push({
+                device_id: device.id,
+                backoff_seconds: state.backoffSeconds,
+                next_allowed_at: state.nextAllowedAtMs ? new Date(state.nextAllowedAtMs).toISOString() : null,
+                iface_next_allowed_at: new Date(nextIfaceAllowedAtMs).toISOString(),
+                last_error: r.error ?? null,
+                rate_limit_count: state.rateLimitCount,
+                reason: "429 rate limit (iface cooldown)",
+              });
+              log("iface_backoff", {
+                device_id: device.id,
+                site: device.site,
+                cooldown_seconds: ifaceCooldownSeconds,
+              });
+            } else {
+              const nextCount = Math.max(1, state.rateLimitCount + 1);
+              const nextBackoff = Math.min(600 * 2 ** (nextCount - 1), overrides.backoffCapSeconds);
+              const nextAllowedAtMs = nowMs + nextBackoff * 1000;
+              state.rateLimitCount = nextCount;
+              state.backoffSeconds = nextBackoff;
+              state.nextAllowedAtMs = nextAllowedAtMs;
+              state.reason = "429";
+              state.lastError = r.error ?? null;
+              state.nextRunAtMs = nextAllowedAtMs + jitterMs(3000);
+              backoffUpdates.push({
+                device_id: device.id,
+                backoff_seconds: nextBackoff,
+                next_allowed_at: new Date(nextAllowedAtMs).toISOString(),
+                iface_next_allowed_at: state.ifaceNextAllowedAtMs
+                  ? new Date(state.ifaceNextAllowedAtMs).toISOString()
+                  : null,
+                last_error: r.error ?? null,
+                rate_limit_count: state.rateLimitCount,
+                reason: `429 rate limit (endpoint=${rateLimitedEndpoint ?? "unknown"})`,
+              });
+              log("device_backoff", { device_id: device.id, site: device.site, backoff_seconds: nextBackoff });
+            }
           } else {
             // When we intentionally skip interface calls, keep the last known WAN/LAN values
             // so WAN1/WAN2 don't "disappear" from the dashboard.
@@ -647,14 +722,36 @@ async function main() {
               };
             }
 
+            if (effective.status === "DEGRADED" && effective.error && state.lastError !== effective.error) {
+              state.lastError = effective.error;
+              backoffUpdates.push({
+                device_id: device.id,
+                backoff_seconds: state.backoffSeconds,
+                next_allowed_at: state.nextAllowedAtMs ? new Date(state.nextAllowedAtMs).toISOString() : null,
+                iface_next_allowed_at: state.ifaceNextAllowedAtMs
+                  ? new Date(state.ifaceNextAllowedAtMs).toISOString()
+                  : null,
+                last_error: effective.error,
+                rate_limit_count: state.rateLimitCount,
+                reason: effective.error,
+              });
+            }
+
             if (state.backoffSeconds || state.nextAllowedAtMs) {
               state.backoffSeconds = 0;
               state.nextAllowedAtMs = 0;
               state.reason = null;
+              state.rateLimitCount = 0;
+              state.lastError = null;
               backoffUpdates.push({
                 device_id: device.id,
                 backoff_seconds: 0,
                 next_allowed_at: null,
+                iface_next_allowed_at: state.ifaceNextAllowedAtMs
+                  ? new Date(state.ifaceNextAllowedAtMs).toISOString()
+                  : null,
+                last_error: null,
+                rate_limit_count: 0,
                 reason: null,
               });
             }
@@ -681,6 +778,18 @@ async function main() {
             reachable: false,
             status: isConfigError || isFetchError ? "DEGRADED" : "DOWN",
             error: raw,
+          });
+          state.lastError = raw;
+          backoffUpdates.push({
+            device_id: device.id,
+            backoff_seconds: state.backoffSeconds,
+            next_allowed_at: state.nextAllowedAtMs ? new Date(state.nextAllowedAtMs).toISOString() : null,
+            iface_next_allowed_at: state.ifaceNextAllowedAtMs
+              ? new Date(state.ifaceNextAllowedAtMs).toISOString()
+              : null,
+            last_error: raw,
+            rate_limit_count: state.rateLimitCount,
+            reason: raw,
           });
           state.nextRunAtMs =
             nowMs + deviceStepSeconds * 1000 * Math.max(1, deviceOrder.length) + jitterMs(3000);

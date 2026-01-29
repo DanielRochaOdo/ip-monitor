@@ -6,6 +6,9 @@ type DeviceBackoffRow = {
   device_id: string;
   backoff_seconds: number;
   next_allowed_at: string | null;
+  iface_next_allowed_at: string | null;
+  rate_limit_count: number;
+  last_error: string | null;
   reason: string | null;
   updated_at: string;
 };
@@ -32,7 +35,9 @@ export async function GET(request: Request) {
     const { data: backoffRows } = deviceIds.length
       ? await supabase
           .from("device_backoff")
-          .select("device_id, backoff_seconds, next_allowed_at, reason, updated_at")
+          .select(
+            "device_id, backoff_seconds, next_allowed_at, iface_next_allowed_at, rate_limit_count, last_error, reason, updated_at",
+          )
           .in("device_id", deviceIds)
       : { data: [] as unknown[] };
 

@@ -297,7 +297,9 @@ export async function collectFortiGateApiMetrics(
   if (ifaceRes) maybeLog("iface", ifaceRes);
 
   // Rate-limit: treat as reachable but degraded.
-  if (statusRes?.status === 429 || perfRes?.status === 429 || ifaceRes?.status === 429) {
+  const rateLimitedEndpoint =
+    statusRes?.status === 429 ? "status" : perfRes?.status === 429 ? "perf" : ifaceRes?.status === 429 ? "iface" : null;
+  if (rateLimitedEndpoint) {
     return {
       reachable: true,
       status: "DEGRADED",
@@ -314,7 +316,7 @@ export async function collectFortiGateApiMetrics(
       lanStatus: null,
       lanIp: null,
       rateLimited: true,
-      error: "rate limited by FortiGate (429) - reduce AGENT_DEVICE_CONCURRENCY or increase interval",
+      error: `rate limited by FortiGate (429) - reduce AGENT_DEVICE_CONCURRENCY or increase interval (endpoint=${rateLimitedEndpoint})`,
     };
   }
 
@@ -353,11 +355,19 @@ export async function collectFortiGateApiMetrics(
 
   const anyOk = (perfRes?.ok ?? false) || (ifaceRes?.ok ?? false) || (statusRes?.ok ?? false);
   if (!anyOk) {
-    const status =
+    const raw =
       statusRes?.text ??
       perfRes?.text ??
       ifaceRes?.text ??
       `api failed (mode=${mode} status=${statusRes?.status ?? "-"} perf=${perfRes?.status ?? "-"} iface=${ifaceRes?.status ?? "-"})`;
+    const lowered = raw.toLowerCase();
+    let category = "unknown";
+    if (lowered.includes("timeout")) category = "timeout";
+    else if (lowered.includes("self-signed") || lowered.includes("tls")) category = "tls";
+    else if (lowered.includes("enotfound") || lowered.includes("dns")) category = "dns";
+    else if (lowered.includes("econnrefused")) category = "refused";
+    else if (lowered.includes("connecttimeout")) category = "connect-timeout";
+    const safeBase = base.replace(/:\/\/[^@]+@/, "://");
     return {
       reachable: false,
       status: "DEGRADED",
@@ -373,7 +383,7 @@ export async function collectFortiGateApiMetrics(
       wan2Ip: null,
       lanStatus: null,
       lanIp: null,
-      error: status,
+      error: `fetch failed (${category}) url=${safeBase} mode=${mode}`,
     };
   }
 

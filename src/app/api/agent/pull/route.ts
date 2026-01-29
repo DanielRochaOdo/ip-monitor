@@ -40,7 +40,9 @@ export async function POST(request: Request) {
     const { data: backoffData } = deviceIds.length
       ? await supabaseAdmin
           .from("device_backoff")
-          .select("device_id, backoff_seconds, next_allowed_at, reason, updated_at")
+          .select(
+            "device_id, backoff_seconds, next_allowed_at, iface_next_allowed_at, rate_limit_count, last_error, reason, updated_at",
+          )
           .in("device_id", deviceIds)
       : { data: [] as unknown[] };
 

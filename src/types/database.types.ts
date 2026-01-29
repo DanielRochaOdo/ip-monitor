@@ -332,30 +332,39 @@ export type Database = {
           },
         ];
       };
-      device_backoff: {
-        Row: {
-          device_id: string;
-          agent_id: string | null;
-          backoff_seconds: number;
-          next_allowed_at: string | null;
-          reason: string | null;
-          updated_at: string;
-        };
-        Insert: {
-          device_id: string;
-          agent_id?: string | null;
-          backoff_seconds?: number;
-          next_allowed_at?: string | null;
-          reason?: string | null;
-          updated_at?: string;
-        };
-        Update: {
-          agent_id?: string | null;
-          backoff_seconds?: number;
-          next_allowed_at?: string | null;
-          reason?: string | null;
-          updated_at?: string;
-        };
+        device_backoff: {
+          Row: {
+            device_id: string;
+            agent_id: string | null;
+            backoff_seconds: number;
+            next_allowed_at: string | null;
+            rate_limit_count: number;
+            iface_next_allowed_at: string | null;
+            last_error: string | null;
+            reason: string | null;
+            updated_at: string;
+          };
+          Insert: {
+            device_id: string;
+            agent_id?: string | null;
+            backoff_seconds?: number;
+            next_allowed_at?: string | null;
+            rate_limit_count?: number;
+            iface_next_allowed_at?: string | null;
+            last_error?: string | null;
+            reason?: string | null;
+            updated_at?: string;
+          };
+          Update: {
+            agent_id?: string | null;
+            backoff_seconds?: number;
+            next_allowed_at?: string | null;
+            rate_limit_count?: number;
+            iface_next_allowed_at?: string | null;
+            last_error?: string | null;
+            reason?: string | null;
+            updated_at?: string;
+          };
         Relationships: [
           {
             foreignKeyName: "device_backoff_device_id_fkey";

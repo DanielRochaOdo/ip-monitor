@@ -43,6 +43,9 @@ type AgentDeviceBackoffReport = {
   device_id: string;
   backoff_seconds: number;
   next_allowed_at: string | null;
+  iface_next_allowed_at?: string | null;
+  rate_limit_count?: number;
+  last_error?: string | null;
   reason?: string | null;
 };
 
@@ -254,6 +257,9 @@ export async function POST(request: Request) {
         agent_id: agent.id,
         backoff_seconds: row.backoff_seconds,
         next_allowed_at: row.next_allowed_at,
+        iface_next_allowed_at: row.iface_next_allowed_at ?? null,
+        rate_limit_count: row.rate_limit_count ?? 0,
+        last_error: row.last_error ?? null,
         reason: row.reason ?? null,
         updated_at: new Date().toISOString(),
       }));

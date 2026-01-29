@@ -73,6 +73,9 @@ type DevicesPayload = {
       device_id: string;
       backoff_seconds: number;
       next_allowed_at: string | null;
+      iface_next_allowed_at: string | null;
+      rate_limit_count: number;
+      last_error: string | null;
       reason: string | null;
       updated_at: string;
     } | null;
@@ -360,13 +363,19 @@ export default function DashboardPage() {
                     <span>Atualizado: {latest?.checked_at ? new Date(latest.checked_at).toLocaleTimeString() : "--"}</span>
                   </div>
                   {(() => {
-                    const nextAllowed = backoff?.next_allowed_at ?? null;
-                    const reason = backoff?.reason ?? null;
-                    if (!nextAllowed) return null;
-                    const nextMs = new Date(nextAllowed).getTime();
+                    const nextDevice = backoff?.next_allowed_at ?? null;
+                    const nextIface = backoff?.iface_next_allowed_at ?? null;
+                    const candidates = [nextDevice, nextIface].filter(Boolean) as string[];
+                    if (!candidates.length) return null;
+                    const nextMs = Math.max(...candidates.map((v) => new Date(v).getTime()).filter(Number.isFinite));
                     if (!Number.isFinite(nextMs)) return null;
                     const diffSec = Math.max(0, Math.round((nextMs - Date.now()) / 1000));
                     if (diffSec <= 0) return null;
+                    const reason =
+                      backoff?.reason ??
+                      (nextIface && (!nextDevice || new Date(nextIface).getTime() >= new Date(nextDevice).getTime())
+                        ? "iface cooldown"
+                        : null);
                     return (
                       <p className="text-xs text-slate-500">
                         Proximo retry em {diffSec}s{reason ? ` (${reason})` : ""}
