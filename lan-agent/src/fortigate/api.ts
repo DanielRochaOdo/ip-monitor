@@ -95,6 +95,20 @@ function extractPerf(perfJson: any): { cpu: number | null; mem: number | null; s
   return { cpu, mem, sessions };
 }
 
+function extractSessions(statusJson: any, perfJson: any): number | null {
+  const perfResults = perfJson?.results ?? {};
+  const statusResults = statusJson?.results ?? {};
+  return (
+    pickNumber(perfResults?.sessions) ??
+    pickNumber(perfResults?.session_count) ??
+    pickNumber(statusResults?.sessions) ??
+    pickNumber(statusResults?.session_count) ??
+    pickNumber(statusResults?.session_cnt) ??
+    pickNumber(statusResults?.current_sessions) ??
+    null
+  );
+}
+
 function normalizeInterfaceStatus(value: unknown): string | null {
   if (typeof value === "boolean") return value ? "up" : "down";
   if (typeof value === "string") return value;
@@ -350,6 +364,7 @@ export async function collectFortiGateApiMetrics(
 
   const perf =
     perfRes && perfRes.ok && perfRes.data ? extractPerf(perfRes.data) : { cpu: null, mem: null, sessions: null };
+  const sessions = perf.sessions ?? extractSessions(statusRes?.data ?? null, perfRes?.data ?? null);
   const iface =
     ifaceRes && ifaceRes.ok && ifaceRes.data
       ? extractInterfaces(ifaceRes.data, device.wan_public_ips ?? [])
@@ -400,10 +415,10 @@ export async function collectFortiGateApiMetrics(
     uptimeSeconds,
     cpuPercent: perf.cpu,
     memPercent: perf.mem,
-      sessions: perf.sessions,
-      wan1Status: iface.wan1Status,
-      wan1Ip: iface.wan1Ip,
-      wan2Status: iface.wan2Status,
+    sessions: sessions,
+    wan1Status: iface.wan1Status,
+    wan1Ip: iface.wan1Ip,
+    wan2Status: iface.wan2Status,
     wan2Ip: iface.wan2Ip,
     lanStatus: iface.lanStatus,
     lanIp: iface.lanIp,
