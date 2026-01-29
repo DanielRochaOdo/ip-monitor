@@ -20,6 +20,13 @@ type CircuitState = {
   cooldownUntil: number;
 };
 
+type DeviceOverrides = {
+  stepSeconds: number;
+  interfaceIntervalSeconds: number;
+  statusIntervalSeconds: number;
+  backoffCapSeconds: number;
+};
+
 const circuitByKey = new Map<string, CircuitState>();
 const deviceSchedule = new Map<
   string,
@@ -31,6 +38,7 @@ const deviceSchedule = new Map<
     lastStatusAtMs: number;
     lastIfaceAtMs: number;
     lastPerfAtMs: number;
+    lastRunAtMs: number;
     // Cache last successful metrics so we don't wipe the dashboard when we hit 429.
     lastGood: Partial<AgentDeviceMetricReport> | null;
   }
@@ -55,6 +63,45 @@ function recordResult(key: string, ok: boolean, nowMs: number) {
     }
   }
   circuitByKey.set(key, state);
+}
+
+function normalizeSiteKey(value: string) {
+  return value.trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_");
+}
+
+function getDeviceOverrides(
+  site: string,
+  defaults: DeviceOverrides,
+): DeviceOverrides {
+  const key = normalizeSiteKey(site);
+  const byEnv = (suffix: string) => getEnvInt(`FGT_${key}_${suffix}`, 0);
+
+  // Per-site overrides from env (if set).
+  const stepOverride = byEnv("STEP_SECONDS");
+  const ifaceOverride = byEnv("INTERFACE_INTERVAL_SECONDS");
+  const statusOverride = byEnv("STATUS_INTERVAL_SECONDS");
+  const backoffOverride = byEnv("BACKOFF_CAP_SECONDS");
+
+  if (stepOverride || ifaceOverride || statusOverride || backoffOverride) {
+    return {
+      stepSeconds: stepOverride || defaults.stepSeconds,
+      interfaceIntervalSeconds: ifaceOverride || defaults.interfaceIntervalSeconds,
+      statusIntervalSeconds: statusOverride || defaults.statusIntervalSeconds,
+      backoffCapSeconds: backoffOverride || defaults.backoffCapSeconds,
+    };
+  }
+
+  // Hard defaults for sites known to be more aggressive with rate-limits.
+  if (key === "AGUANAMBI" || key === "BEZERRA") {
+    return {
+      stepSeconds: Math.max(defaults.stepSeconds, 600),
+      interfaceIntervalSeconds: Math.max(defaults.interfaceIntervalSeconds, 1800),
+      statusIntervalSeconds: 0, // disable status endpoint (often 429)
+      backoffCapSeconds: Math.max(defaults.backoffCapSeconds, 1800),
+    };
+  }
+
+  return defaults;
 }
 
 async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -264,16 +311,24 @@ async function main() {
   const monitorPollSeconds = getEnvInt("AGENT_MONITOR_POLL_SECONDS", 60);
   // Devices: avoid bursts by checking ONE device per step (default 60s).
   // Each device ends up being checked roughly every (step * number_of_devices).
-  // Default is conservative (5 min per step) to avoid FortiGate 429. Use the "Monitorar agora"
-  // button in the dashboard for immediate checks when needed.
-  const deviceStepSeconds = getEnvInt("AGENT_DEVICE_STEP_SECONDS", 300);
-  // How often to call the interfaces endpoint per device (default 15 min).
-  const deviceInterfaceIntervalSeconds = getEnvInt("AGENT_DEVICE_INTERFACE_INTERVAL_SECONDS", 900);
-  const deviceBackoffCapSeconds = getEnvInt("AGENT_DEVICE_BACKOFF_CAP_SECONDS", 900);
-
+  // If you see 429, raise the step (e.g. 300 = 5 min). Use "Monitorar agora"
+  // in the dashboard for immediate checks.
   const timeoutMs = getEnvInt("AGENT_TIMEOUT_MS", 2500);
   const deviceTimeoutMs = getEnvInt("AGENT_DEVICE_TIMEOUT_MS", Math.max(timeoutMs, 8000));
   const deviceStatusIntervalSeconds = getEnvInt("AGENT_DEVICE_STATUS_INTERVAL_SECONDS", 86400);
+  // Devices: avoid bursts by checking ONE device per step (default 60s).
+  // Each device ends up being checked roughly every (step * number_of_devices).
+  // Default is 1 device per minute. Increase to 300 (5 min) if you see 429.
+  const deviceStepSeconds = getEnvInt("AGENT_DEVICE_STEP_SECONDS", 60);
+  // How often to call the interfaces endpoint per device (default 15 min).
+  const deviceInterfaceIntervalSeconds = getEnvInt("AGENT_DEVICE_INTERFACE_INTERVAL_SECONDS", 900);
+  const deviceBackoffCapSeconds = getEnvInt("AGENT_DEVICE_BACKOFF_CAP_SECONDS", 900);
+  const deviceDefaults: DeviceOverrides = {
+    stepSeconds: deviceStepSeconds,
+    interfaceIntervalSeconds: deviceInterfaceIntervalSeconds,
+    statusIntervalSeconds: deviceStatusIntervalSeconds,
+    backoffCapSeconds: deviceBackoffCapSeconds,
+  };
 
   const monitorConcurrency = getEnvInt("AGENT_CONCURRENCY", 2);
   // Kept for compatibility; this scheduler runs at most 1 device per step to avoid bursts.
@@ -350,6 +405,7 @@ async function main() {
             lastStatusAtMs: existing?.lastStatusAtMs ?? 0,
             lastIfaceAtMs: existing?.lastIfaceAtMs ?? 0,
             lastPerfAtMs: existing?.lastPerfAtMs ?? 0,
+            lastRunAtMs: existing?.lastRunAtMs ?? 0,
             lastGood: existing?.lastGood ?? null,
           });
         }
@@ -366,6 +422,7 @@ async function main() {
             lastStatusAtMs: 0,
             lastIfaceAtMs: 0,
             lastPerfAtMs: 0,
+            lastRunAtMs: 0,
             lastGood: null,
           });
         });
@@ -444,10 +501,13 @@ async function main() {
         }
 
         const state = deviceSchedule.get(device.id)!;
+        const overrides = getDeviceOverrides(device.site, deviceDefaults);
 
         // Respect circuit-breaker and per-device backoff windows.
         const skipCircuit = shouldSkip(`d:${device.id}`, nowMs);
         const skipBackoff = !!state.nextAllowedAtMs && nowMs < state.nextAllowedAtMs;
+        const minIntervalMs = overrides.stepSeconds * 1000;
+        const skipInterval = !selectedRequestId && state.lastRunAtMs && nowMs - state.lastRunAtMs < minIntervalMs;
         if (skipCircuit || skipBackoff) {
           log("device_skipped", {
             device_id: device.id,
@@ -461,6 +521,15 @@ async function main() {
             pendingDeviceRunRequests = pendingDeviceRunRequests.filter((rr) => rr.id !== selectedRequestId);
           }
 
+          await sleep(1000);
+          continue;
+        }
+        if (skipInterval) {
+          log("device_skipped", {
+            device_id: device.id,
+            site: device.site,
+            reason: "per_device_interval",
+          });
           await sleep(1000);
           continue;
         }
@@ -478,10 +547,10 @@ async function main() {
           // - Else: refresh interfaces when stale, otherwise refresh perf (cpu/mem).
           // - Status is very infrequent (24h) and takes over a single run when due.
           const statusDue =
-            deviceStatusIntervalSeconds > 0 &&
-            nowMs - state.lastStatusAtMs >= deviceStatusIntervalSeconds * 1000;
-          const ifaceDue = nowMs - state.lastIfaceAtMs >= deviceInterfaceIntervalSeconds * 1000;
-          const perfDue = nowMs - state.lastPerfAtMs >= deviceStepSeconds * 1000;
+            overrides.statusIntervalSeconds > 0 &&
+            nowMs - state.lastStatusAtMs >= overrides.statusIntervalSeconds * 1000;
+          const ifaceDue = nowMs - state.lastIfaceAtMs >= overrides.interfaceIntervalSeconds * 1000;
+          const perfDue = nowMs - state.lastPerfAtMs >= overrides.stepSeconds * 1000;
 
           let mode: "perf" | "iface" | "status" = "perf";
           if (selectedRequestId) {
@@ -519,7 +588,10 @@ async function main() {
             };
             deviceReports.push(merged);
 
-            const nextBackoff = Math.min(state.backoffSeconds ? state.backoffSeconds * 2 : 60, deviceBackoffCapSeconds);
+            const nextBackoff = Math.min(
+              state.backoffSeconds ? state.backoffSeconds * 2 : 60,
+              overrides.backoffCapSeconds,
+            );
             const nextAllowedAtMs = nowMs + nextBackoff * 1000;
             state.backoffSeconds = nextBackoff;
             state.nextAllowedAtMs = nextAllowedAtMs;
@@ -589,6 +661,7 @@ async function main() {
             state.nextRunAtMs =
               nowMs + deviceStepSeconds * 1000 * Math.max(1, deviceOrder.length) + jitterMs(3000);
           }
+          state.lastRunAtMs = nowMs;
         } catch (e) {
           recordResult(key, false, nowMs);
           deviceReports.push({
@@ -600,6 +673,7 @@ async function main() {
           });
           state.nextRunAtMs =
             nowMs + deviceStepSeconds * 1000 * Math.max(1, deviceOrder.length) + jitterMs(3000);
+          state.lastRunAtMs = nowMs;
         } finally {
           // Consume manual requests even on failure/rate-limit so the button doesn't "stick".
           if (selectedRequestId) {
