@@ -25,6 +25,7 @@ type DeviceOverrides = {
   interfaceIntervalSeconds: number;
   statusIntervalSeconds: number;
   backoffCapSeconds: number;
+  ifaceCooldownSeconds: number;
 };
 
 const circuitByKey = new Map<string, CircuitState>();
@@ -75,6 +76,14 @@ function normalizeSiteKey(value: string) {
 function getDeviceOverrides(
   site: string,
   defaults: DeviceOverrides,
+  device?: Partial<Pick<
+    AgentPullResponse["devices"][number],
+    | "step_seconds"
+    | "interface_interval_seconds"
+    | "status_interval_seconds"
+    | "backoff_cap_seconds"
+    | "iface_cooldown_seconds"
+  >>,
 ): DeviceOverrides {
   const key = normalizeSiteKey(site);
   const byEnv = (suffix: string) => getEnvInt(`FGT_${key}_${suffix}`, 0);
@@ -91,6 +100,24 @@ function getDeviceOverrides(
       interfaceIntervalSeconds: ifaceOverride || defaults.interfaceIntervalSeconds,
       statusIntervalSeconds: statusOverride || defaults.statusIntervalSeconds,
       backoffCapSeconds: backoffOverride || defaults.backoffCapSeconds,
+      ifaceCooldownSeconds: defaults.ifaceCooldownSeconds,
+    };
+  }
+
+  // Per-device overrides from DB (if set).
+  const stepDb = device?.step_seconds ?? null;
+  const ifaceDb = device?.interface_interval_seconds ?? null;
+  const statusDb = device?.status_interval_seconds ?? null;
+  const backoffDb = device?.backoff_cap_seconds ?? null;
+  const ifaceCooldownDb = device?.iface_cooldown_seconds ?? null;
+
+  if (stepDb || ifaceDb || statusDb || backoffDb || ifaceCooldownDb) {
+    return {
+      stepSeconds: stepDb ?? defaults.stepSeconds,
+      interfaceIntervalSeconds: ifaceDb ?? defaults.interfaceIntervalSeconds,
+      statusIntervalSeconds: statusDb ?? defaults.statusIntervalSeconds,
+      backoffCapSeconds: backoffDb ?? defaults.backoffCapSeconds,
+      ifaceCooldownSeconds: ifaceCooldownDb ?? defaults.ifaceCooldownSeconds,
     };
   }
 
@@ -101,6 +128,7 @@ function getDeviceOverrides(
       interfaceIntervalSeconds: Math.max(defaults.interfaceIntervalSeconds, 1800),
       statusIntervalSeconds: 0, // disable status endpoint (often 429)
       backoffCapSeconds: Math.max(defaults.backoffCapSeconds, 1800),
+      ifaceCooldownSeconds: Math.max(defaults.ifaceCooldownSeconds, 1800),
     };
   }
 
@@ -327,6 +355,7 @@ async function main() {
     interfaceIntervalSeconds: deviceInterfaceIntervalSeconds,
     statusIntervalSeconds: deviceStatusIntervalSeconds,
     backoffCapSeconds: deviceBackoffCapSeconds,
+    ifaceCooldownSeconds: ifaceCooldownSeconds,
   };
 
   const monitorConcurrency = getEnvInt("AGENT_CONCURRENCY", 1);
@@ -389,6 +418,7 @@ async function main() {
       } else {
         devices = pull.data.devices ?? [];
         for (const device of devices) {
+          if (device.api_token) continue;
           const ref = device.api_token_secret_ref?.trim() ?? null;
           if (!ref) {
             const key = `${device.id}:missing-ref`;
@@ -542,7 +572,7 @@ async function main() {
         }
 
         const state = deviceSchedule.get(device.id)!;
-        const overrides = getDeviceOverrides(device.site, deviceDefaults);
+        const overrides = getDeviceOverrides(device.site, deviceDefaults, device);
 
         // Respect circuit-breaker and per-device backoff windows.
         const skipCircuit = shouldSkip(`d:${device.id}`, nowMs);
@@ -639,7 +669,7 @@ async function main() {
             deviceReports.push(merged);
 
             if (rateLimitedEndpoint === "iface") {
-              const nextIfaceAllowedAtMs = nowMs + ifaceCooldownSeconds * 1000;
+              const nextIfaceAllowedAtMs = nowMs + overrides.ifaceCooldownSeconds * 1000;
               state.ifaceNextAllowedAtMs = nextIfaceAllowedAtMs;
               state.lastError = r.error ?? null;
               backoffUpdates.push({
@@ -654,7 +684,7 @@ async function main() {
               log("iface_backoff", {
                 device_id: device.id,
                 site: device.site,
-                cooldown_seconds: ifaceCooldownSeconds,
+                cooldown_seconds: overrides.ifaceCooldownSeconds,
               });
             } else {
               const nextCount = Math.max(1, state.rateLimitCount + 1);

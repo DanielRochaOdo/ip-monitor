@@ -21,33 +21,65 @@ create index if not exists device_run_requests_consumed_idx on device_run_reques
 alter table device_run_requests enable row level security;
 
 -- Dashboard user can manage requests only for their own devices.
-create policy "device_run_requests_owner_read" on device_run_requests for select
-  using (
-    exists (
-      select 1
-      from network_devices d
-      where d.id = device_run_requests.device_id
-        and d.user_id = auth.uid()
-    )
-  );
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'public'
+      and tablename = 'device_run_requests'
+      and policyname = 'device_run_requests_owner_read'
+  ) then
+    create policy "device_run_requests_owner_read" on device_run_requests for select
+      using (
+        exists (
+          select 1
+          from network_devices d
+          where d.id = device_run_requests.device_id
+            and d.user_id = auth.uid()
+        )
+      );
+  end if;
+end $$;
 
-create policy "device_run_requests_owner_insert" on device_run_requests for insert
-  with check (
-    exists (
-      select 1
-      from network_devices d
-      where d.id = device_run_requests.device_id
-        and d.user_id = auth.uid()
-    )
-  );
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'public'
+      and tablename = 'device_run_requests'
+      and policyname = 'device_run_requests_owner_insert'
+  ) then
+    create policy "device_run_requests_owner_insert" on device_run_requests for insert
+      with check (
+        exists (
+          select 1
+          from network_devices d
+          where d.id = device_run_requests.device_id
+            and d.user_id = auth.uid()
+        )
+      );
+  end if;
+end $$;
 
-create policy "device_run_requests_owner_delete" on device_run_requests for delete
-  using (
-    exists (
-      select 1
-      from network_devices d
-      where d.id = device_run_requests.device_id
-        and d.user_id = auth.uid()
-    )
-  );
-
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'public'
+      and tablename = 'device_run_requests'
+      and policyname = 'device_run_requests_owner_delete'
+  ) then
+    create policy "device_run_requests_owner_delete" on device_run_requests for delete
+      using (
+        exists (
+          select 1
+          from network_devices d
+          where d.id = device_run_requests.device_id
+            and d.user_id = auth.uid()
+        )
+      );
+  end if;
+end $$;

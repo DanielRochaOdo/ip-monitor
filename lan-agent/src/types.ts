@@ -38,7 +38,13 @@ export type AgentPullResponse = {
     mgmt_method: "API" | "SNMP" | "TCP_ONLY";
     mgmt_port: number;
     api_base_url: string | null;
+    api_token?: string | null;
     api_token_secret_ref: string | null;
+    step_seconds?: number | null;
+    interface_interval_seconds?: number | null;
+    status_interval_seconds?: number | null;
+    backoff_cap_seconds?: number | null;
+    iface_cooldown_seconds?: number | null;
     snmp_version: "v2c" | "v3" | null;
     snmp_target: string | null;
     snmp_community: string | null;
