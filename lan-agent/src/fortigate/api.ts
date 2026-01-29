@@ -209,7 +209,7 @@ export async function collectFortiGateApiMetrics(
     });
     return {
       reachable: false,
-      status: "DOWN",
+      status: "DEGRADED",
       hostname: device.hostname,
       firmwareVersion: null,
       uptimeSeconds: null,
@@ -232,7 +232,7 @@ export async function collectFortiGateApiMetrics(
   if (!base) {
     return {
       reachable: false,
-      status: "DOWN",
+      status: "DEGRADED",
       hostname: device.hostname,
       firmwareVersion: null,
       uptimeSeconds: null,
@@ -360,7 +360,7 @@ export async function collectFortiGateApiMetrics(
       `api failed (mode=${mode} status=${statusRes?.status ?? "-"} perf=${perfRes?.status ?? "-"} iface=${ifaceRes?.status ?? "-"})`;
     return {
       reachable: false,
-      status: "DOWN",
+      status: "DEGRADED",
       hostname,
       firmwareVersion,
       uptimeSeconds,

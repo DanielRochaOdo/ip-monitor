@@ -664,12 +664,23 @@ async function main() {
           state.lastRunAtMs = nowMs;
         } catch (e) {
           recordResult(key, false, nowMs);
+          const raw = e instanceof Error ? e.message : String(e);
+          const normalized = raw.toLowerCase();
+          const isConfigError =
+            normalized.includes("missing api token") ||
+            normalized.includes("api_token_secret_ref") ||
+            normalized.includes("missing api_base_url") ||
+            normalized.includes("missing lan_ip");
+          const isFetchError =
+            normalized.includes("fetch failed") ||
+            normalized.includes("timeout") ||
+            normalized.includes("connecttimeout");
           deviceReports.push({
             device_id: device.id,
             checked_at: new Date().toISOString(),
             reachable: false,
-            status: "DOWN",
-            error: e instanceof Error ? e.message : String(e),
+            status: isConfigError || isFetchError ? "DEGRADED" : "DOWN",
+            error: raw,
           });
           state.nextRunAtMs =
             nowMs + deviceStepSeconds * 1000 * Math.max(1, deviceOrder.length) + jitterMs(3000);
