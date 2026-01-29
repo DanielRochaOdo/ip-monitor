@@ -8,6 +8,7 @@ export type FortiGateDeviceTask = {
   lan_ip: string | null;
   mgmt_port: number;
   api_base_url: string | null;
+  api_token?: string | null;
   api_token_secret_ref: string | null;
 };
 
@@ -40,6 +41,7 @@ function withAccessToken(url: string, token: string, mode: "query" | "header") {
 }
 
 function getTokenForDevice(device: FortiGateDeviceTask) {
+  if (device.api_token) return device.api_token;
   const ref = device.api_token_secret_ref?.trim();
   if (!ref) return null;
   return process.env[ref]?.trim() ?? null;

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAgentFromRequest } from "@/app/api/agent/_lib";
+import { decryptDeviceToken } from "@/lib/crypto/device-token";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
@@ -27,7 +28,7 @@ export async function POST(request: Request) {
     const { data: devicesData, error: devicesError } = await supabaseAdmin
       .from("network_devices")
       .select(
-        "id, user_id, site, hostname, vendor, model, firmware_expected, wan_public_ips, lan_ip, agent_id, mgmt_method, mgmt_port, api_base_url, api_token_secret_ref, snmp_version, snmp_target, snmp_community",
+        "id, user_id, site, hostname, vendor, model, firmware_expected, wan_public_ips, lan_ip, agent_id, mgmt_method, mgmt_port, api_base_url, api_token_secret_ref, api_token_encrypted, step_seconds, interface_interval_seconds, status_interval_seconds, backoff_cap_seconds, iface_cooldown_seconds, snmp_version, snmp_target, snmp_community",
       )
       .eq("agent_id", agent.id)
       .limit(50);
@@ -58,10 +59,22 @@ export async function POST(request: Request) {
 
     // Normalize a few string fields to avoid subtle whitespace bugs in the agent.
     const normalizedDevices = (devicesData ?? []).map((d) => {
-      const row = d as unknown as { api_token_secret_ref?: string | null; api_base_url?: string | null };
+      const row = d as unknown as {
+        api_token_secret_ref?: string | null;
+        api_token_encrypted?: string | null;
+        api_base_url?: string | null;
+      };
       const api_token_secret_ref = row.api_token_secret_ref?.trim() || null;
       const api_base_url = row.api_base_url?.trim() || null;
-      return { ...d, api_token_secret_ref, api_base_url };
+      let api_token: string | null = null;
+      if (row.api_token_encrypted) {
+        try {
+          api_token = decryptDeviceToken(row.api_token_encrypted);
+        } catch {
+          api_token = null;
+        }
+      }
+      return { ...d, api_token_secret_ref, api_base_url, api_token };
     });
 
     return NextResponse.json({

@@ -48,6 +48,7 @@ Visit `http://localhost:3000` and sign up. Protected UI lives under `/dashboard`
 | `SUPABASE_SERVICE_ROLE_KEY` | Service role key (server only, used by cron) |
 | `APP_URL` | Canonical app URL (used inside emails); optional on Vercel because `VERCEL_URL` is used automatically |
 | `CRON_SECRET` | Shared secret required by `/api/cron/check-monitors` |
+| `DEVICE_TOKEN_ENCRYPTION_KEY` | Base64 32-byte key used to encrypt FortiGate tokens stored in Supabase |
 | `SMTP_HOST` | Supabase SMTP host (Settings > Email under your project) |
 | `SMTP_PORT` | Corresponding SMTP port (usually 587) |
 | `SMTP_USERNAME` | SMTP username provided by Supabase |
