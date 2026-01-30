@@ -1,5 +1,6 @@
 services:
   lan-agent:
+    container_name: ip-monitor
     build: .
     restart: always
     env_file:
