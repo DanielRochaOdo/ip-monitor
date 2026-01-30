@@ -613,28 +613,12 @@ async function main() {
 
         const key = `d:${device.id}`;
         try {
-          // Single endpoint per run:
-          // - If manual run requested: prioritize WAN/LAN interfaces (this fixes "WAN missing" quickly).
-          // - Else: refresh interfaces when stale, otherwise refresh perf (cpu/mem).
-          // - Status is very infrequent (24h) and takes over a single run when due.
-          const statusDue =
-            overrides.statusIntervalSeconds > 0 &&
-            nowMs - state.lastStatusAtMs >= overrides.statusIntervalSeconds * 1000;
+          // Single endpoint per run (iface only) for maximum stability:
+          // We only care about WAN/LAN link status (up/down).
           const ifaceCooldownActive = state.ifaceNextAllowedAtMs && nowMs < state.ifaceNextAllowedAtMs;
           const ifaceDue =
             !ifaceCooldownActive && nowMs - state.lastIfaceAtMs >= overrides.interfaceIntervalSeconds * 1000;
-          const perfDue = nowMs - state.lastPerfAtMs >= overrides.stepSeconds * 1000;
-
-          let mode: "perf" | "iface" | "status" = "perf";
-          if (selectedRequestId) {
-            mode = ifaceCooldownActive ? "perf" : "iface";
-          } else if (statusDue) {
-            mode = "status";
-          } else if (ifaceDue) {
-            mode = "iface";
-          } else if (perfDue) {
-            mode = "perf";
-          }
+          const mode: "perf" | "iface" | "status" = ifaceDue ? "iface" : "iface";
 
           const r = await runDeviceCheck(device, deviceTimeoutMs, { mode });
           recordResult(key, r.status !== "DOWN", nowMs);
